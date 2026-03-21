@@ -1,0 +1,29 @@
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Brainstorm visual companion
+.superpowers/
+
+# Agent skills (installed via npx skills)
+.adal/
+.agent/
+.agents/
+.amp/
+.claude/
+.cline/
+.codex/
+.cursor/
+.github/
+.goose/
+.junie/
+.roo/
+.trae/
+.vibe/
+.windsurf/
+.zencoder/
+skills/
+skills-lock.json
