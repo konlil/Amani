@@ -1,0 +1,13 @@
+{
+    "compilerOptions": {
+        "strict": true,
+        "noImplicitAny": true,
+        "noUncheckedIndexedAccess": true,
+        "target": "ES2020",
+        "module": "ES2020",
+        "outDir": "./dist",
+        "rootDir": "./src",
+        "lib": ["ES2020"]
+    },
+    "include": ["src/**/*.ts"]
+}

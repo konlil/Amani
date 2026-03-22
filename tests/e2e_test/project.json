@@ -1,0 +1,7 @@
+{
+    "name": "e2e_test",
+    "version": "0.1.0",
+    "engine_version": "4.4.1",
+    "entry_script": "src/main.ts",
+    "entry_scene": "scenes/main_scene.yaml"
+}
