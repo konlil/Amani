@@ -128,7 +128,7 @@ TSCompiler::CompileResult TSCompiler::compile() {
 	if (result.success) {
 		String build_cmd = tsc_path + " --project " + project_dir + "/tsconfig.json 2>&1";
 		run_command(build_cmd, &ec);
-		result.output_dir = project_dir + "/dist";
+		result.output_dir = project_dir + "/build";
 	}
 
 	return result;

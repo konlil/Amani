@@ -265,19 +265,7 @@ static JSValue js_engine_call_method(JSContext *ctx, JSValueConst this_val, int 
 	return variant_to_js(ctx, ret);
 }
 
-// Engine.onProcess(callback) — stores a JS callback for per-frame ticking
-static JSValue js_engine_on_process(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-	if (argc < 1 || !JS_IsFunction(ctx, argv[0])) {
-		return JS_ThrowTypeError(ctx, "Engine.onProcess requires a function argument");
-	}
-	// Store callback as a property on the Engine object itself
-	JSValue global = JS_GetGlobalObject(ctx);
-	JSValue engine = JS_GetPropertyStr(ctx, global, "Engine");
-	JS_SetPropertyStr(ctx, engine, "_processCallback", JS_DupValue(ctx, argv[0]));
-	JS_FreeValue(ctx, engine);
-	JS_FreeValue(ctx, global);
-	return JS_UNDEFINED;
-}
+// Engine.onProcess is now implemented in the JS bootstrap (pushes to _processCallbacks array)
 
 // Engine.getSceneRoot() — returns the wrapped scene root node
 static JSValue js_engine_get_scene_root(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -330,8 +318,6 @@ bool QuickJSRuntime::initialize() {
 
 	// Add Engine helper functions to the Engine namespace
 	JSValue engine_ns = JS_GetPropertyStr(ctx, global, "Engine");
-	JS_SetPropertyStr(ctx, engine_ns, "onProcess",
-			JS_NewCFunction(ctx, js_engine_on_process, "onProcess", 1));
 	JS_SetPropertyStr(ctx, engine_ns, "getSceneRoot",
 			JS_NewCFunction(ctx, js_engine_get_scene_root, "getSceneRoot", 0));
 	JS_SetPropertyStr(ctx, engine_ns, "createResource",
@@ -345,6 +331,102 @@ bool QuickJSRuntime::initialize() {
 	JS_FreeValue(ctx, engine_ns);
 
 	JS_FreeValue(ctx, global);
+
+	// Run bootstrap JS to set up high-level helper API
+	static const char *bootstrap_js = R"JS(
+(function() {
+  // Multi-callback support for onProcess
+  Engine._processCallbacks = [];
+  Engine.onProcess = function(fn) { Engine._processCallbacks.push(fn); };
+
+  // Value type constructors
+  Engine.vec2 = function(x, y) { return {x:x||0, y:y||0}; };
+  Engine.vec3 = function(x, y, z) { return {x:x||0, y:y||0, z:z||0}; };
+  Engine.color = function(r, g, b, a) { return {r:r||0, g:g||0, b:b||0, a:a!==undefined?a:1}; };
+
+  // Enum constants
+  Engine.PRIMITIVE_TRIANGLES = 3;
+  Engine.SHADING_MODE_UNSHADED = 0;
+  Engine.BG_COLOR = 1;
+
+  // Add a node to the scene root
+  Engine.addToScene = function(node) {
+    Engine.callMethod(Engine.getSceneRoot(), "call_deferred", "add_child", node);
+  };
+
+  // Create a primitive mesh instance
+  var meshMap = { box:"BoxMesh", sphere:"SphereMesh", cylinder:"CylinderMesh",
+    capsule:"CapsuleMesh", prism:"PrismMesh", triangle:"PrismMesh",
+    plane:"PlaneMesh", quad:"QuadMesh" };
+  Engine.createPrimitive = function(type, opts) {
+    opts = opts || {};
+    var mi = new Engine.MeshInstance3D();
+    var meshClass = meshMap[type] || "BoxMesh";
+    var mesh = Engine.createResource(meshClass);
+    if (opts.size) Engine.setProperty(mesh, "size", typeof opts.size==="number"
+      ? {x:opts.size,y:opts.size,z:opts.size} : opts.size);
+    Engine.setProperty(mi, "mesh", mesh);
+    if (opts.color) {
+      var mat = Engine.createResource("StandardMaterial3D");
+      Engine.setProperty(mat, "albedo_color", opts.color);
+      Engine.setProperty(mat, "shading_mode", 0);
+      Engine.setProperty(mi, "material_override", mat);
+    }
+    if (opts.position) Engine.setProperty(mi, "position", opts.position);
+    if (opts.name) mi.set_name(opts.name);
+    return mi;
+  };
+
+  // Set up a basic 3D scene with camera, light, and environment
+  Engine.setupScene = function(opts) {
+    opts = opts || {};
+    var bg = opts.background || {r:0.2, g:0.2, b:0.25, a:1};
+    var camPos = (opts.camera && opts.camera.position) || {x:0, y:1, z:5};
+
+    var env = Engine.createResource("Environment");
+    Engine.setProperty(env, "background_mode", 1);
+    Engine.setProperty(env, "background_color", bg);
+    Engine.setProperty(env, "ambient_light_color", {r:0.4,g:0.4,b:0.4,a:1});
+    Engine.setProperty(env, "ambient_light_energy", 0.5);
+    var we = new Engine.WorldEnvironment();
+    Engine.setProperty(we, "environment", env);
+    Engine.addToScene(we);
+
+    var cam = new Engine.Camera3D();
+    cam.set_name("Camera");
+    Engine.setProperty(cam, "position", camPos);
+    Engine.addToScene(cam);
+
+    var light = new Engine.DirectionalLight3D();
+    light.set_name("Light");
+    Engine.setProperty(light, "rotation", {x:-0.6, y:0.4, z:0});
+    Engine.addToScene(light);
+
+    // make_current once camera is in tree
+    var _camReady = false;
+    Engine.onProcess(function _initCam() {
+      if (!_camReady && cam.is_inside_tree()) {
+        Engine.callMethod(cam, "make_current");
+        _camReady = true;
+      }
+    });
+
+    return { camera: cam, light: light };
+  };
+})();
+)JS";
+
+	JSValue bootstrap_result = JS_Eval(ctx, bootstrap_js, strlen(bootstrap_js), "<bootstrap>", JS_EVAL_TYPE_GLOBAL);
+	if (JS_IsException(bootstrap_result)) {
+		JSValue exception = JS_GetException(ctx);
+		const char *str = JS_ToCString(ctx, exception);
+		if (str) {
+			ERR_PRINT("QuickJS bootstrap error: " + String::utf8(str));
+			JS_FreeCString(ctx, str);
+		}
+		JS_FreeValue(ctx, exception);
+	}
+	JS_FreeValue(ctx, bootstrap_result);
 
 	initialized = true;
 	print_line("QuickJS runtime initialized.");
@@ -393,25 +475,36 @@ void QuickJSRuntime::tick_process(float p_delta) {
 
 	JSValue global = JS_GetGlobalObject(ctx);
 	JSValue engine = JS_GetPropertyStr(ctx, global, "Engine");
-	JSValue callback = JS_GetPropertyStr(ctx, engine, "_processCallback");
+	JSValue callbacks = JS_GetPropertyStr(ctx, engine, "_processCallbacks");
 
-	if (JS_IsFunction(ctx, callback)) {
+	if (JS_IsArray(ctx, callbacks)) {
+		JSValue len_val = JS_GetPropertyStr(ctx, callbacks, "length");
+		int32_t len = 0;
+		JS_ToInt32(ctx, &len, len_val);
+		JS_FreeValue(ctx, len_val);
+
 		JSValue delta_val = JS_NewFloat64(ctx, p_delta);
-		JSValue ret = JS_Call(ctx, callback, JS_UNDEFINED, 1, &delta_val);
-		if (JS_IsException(ret)) {
-			JSValue exception = JS_GetException(ctx);
-			const char *str = JS_ToCString(ctx, exception);
-			if (str) {
-				ERR_PRINT("QuickJS _process error: " + String::utf8(str));
-				JS_FreeCString(ctx, str);
+		for (int32_t i = 0; i < len; i++) {
+			JSValue fn = JS_GetPropertyUint32(ctx, callbacks, i);
+			if (JS_IsFunction(ctx, fn)) {
+				JSValue ret = JS_Call(ctx, fn, JS_UNDEFINED, 1, &delta_val);
+				if (JS_IsException(ret)) {
+					JSValue exception = JS_GetException(ctx);
+					const char *str = JS_ToCString(ctx, exception);
+					if (str) {
+						ERR_PRINT("QuickJS _process error: " + String::utf8(str));
+						JS_FreeCString(ctx, str);
+					}
+					JS_FreeValue(ctx, exception);
+				}
+				JS_FreeValue(ctx, ret);
 			}
-			JS_FreeValue(ctx, exception);
+			JS_FreeValue(ctx, fn);
 		}
-		JS_FreeValue(ctx, ret);
 		JS_FreeValue(ctx, delta_val);
 	}
 
-	JS_FreeValue(ctx, callback);
+	JS_FreeValue(ctx, callbacks);
 	JS_FreeValue(ctx, engine);
 	JS_FreeValue(ctx, global);
 }

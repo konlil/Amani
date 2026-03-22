@@ -1892,4 +1892,33 @@ declare namespace Engine {
     function getProperty(obj: any, name: string): any;
     function callMethod(obj: any, methodName: string, ...args: any[]): any;
 
+    // High-level helper API
+    function vec2(x?: number, y?: number): Vector2;
+    function vec3(x?: number, y?: number, z?: number): Vector3;
+    function color(r?: number, g?: number, b?: number, a?: number): Color;
+
+    /** Add a node to the scene root (uses call_deferred internally). */
+    function addToScene(node: Node): void;
+
+    interface PrimitiveOptions {
+        size?: number | Vector3;
+        color?: Color;
+        position?: Vector3;
+        name?: string;
+    }
+    /** Create a MeshInstance3D with a built-in mesh. type: 'box'|'sphere'|'cylinder'|'capsule'|'prism'|'triangle'|'plane'|'quad' */
+    function createPrimitive(type: string, opts?: PrimitiveOptions): MeshInstance3D;
+
+    interface SceneOptions {
+        background?: Color;
+        camera?: { position?: Vector3 };
+    }
+    /** Set up a basic 3D scene with camera, directional light, and environment. */
+    function setupScene(opts?: SceneOptions): { camera: Camera3D; light: DirectionalLight3D };
+
+    // Enum constants
+    const PRIMITIVE_TRIANGLES: number;
+    const SHADING_MODE_UNSHADED: number;
+    const BG_COLOR: number;
+
 }

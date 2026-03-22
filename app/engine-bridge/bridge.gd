@@ -129,18 +129,34 @@ func _handle_command(cmd: Dictionary):
 
 			# Find and execute JS
 			var output_dir = cdata.get("output_dir", project_dir + "/build")
-			var main_js = output_dir + "/main.js"
+			var main_js = output_dir + "/scripts/main.js"
+			if not FileAccess.file_exists(main_js):
+				main_js = output_dir + "/main.js"
 			var fa = FileAccess.open(main_js, FileAccess.READ)
 			if fa == null:
 				_write_result({"type": "compile_and_run", "success": false, "error": "Cannot open " + main_js})
 				return
 
+			# Clean up previous scene children (except bridge itself)
+			var root = get_tree().root
+			for child in root.get_children():
+				if child != self:
+					root.remove_child(child)
+					child.queue_free()
+
+			# Re-initialize QuickJS runtime for a clean slate
+			runtime.finalize()
+			runtime.initialize()
+			runtime.set_scene_root(root)
+
 			var js_code = fa.get_as_text()
 			fa.close()
 			runtime.eval_string(js_code, "main.js")
 
-			await get_tree().process_frame
-			await get_tree().process_frame
+			# Wait enough frames for call_deferred add_child + rendering pipeline
+			for i in range(5):
+				runtime.tick_process(get_process_delta_time())
+				await get_tree().process_frame
 
 			var screenshot_path = coordinator.take_screenshot()
 			var state = coordinator.get_scene_state()

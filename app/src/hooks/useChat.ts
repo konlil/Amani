@@ -9,6 +9,30 @@ The engine uses TypeScript compiled to JavaScript and executed via QuickJS.
 Engine is a global object — use Engine.* directly as values (e.g. new Engine.Node3D()).
 Do NOT use import statements. All engine APIs are available globally via the Engine namespace.
 Only use APIs that exist in the type definitions below. Do NOT invent APIs.
+
+IMPORTANT — Always follow this pattern:
+1. Start with Engine.setupScene() to create camera, light, and environment.
+2. Use Engine.createPrimitive(type, opts) to create meshes (box, sphere, cylinder, capsule, prism, triangle, plane, quad).
+3. Use Engine.addToScene(node) to add nodes to the scene.
+4. Use Engine.vec3(x,y,z) and Engine.color(r,g,b,a) to construct value types.
+5. Use Engine.onProcess(fn) for per-frame animation logic.
+
+Example:
+\`\`\`typescript // scripts/main.ts
+Engine.setupScene({
+  background: Engine.color(0.15, 0.15, 0.2),
+  camera: { position: Engine.vec3(0, 0, 4) }
+});
+const box = Engine.createPrimitive("box", {
+  color: Engine.color(1, 0.3, 0.1),
+  position: Engine.vec3(0, 0.5, 0)
+});
+Engine.addToScene(box);
+Engine.onProcess((delta) => {
+  box.rotate_y(delta * 2);
+});
+\`\`\`
+
 When generating code, wrap it in a code block with the target filename:
 \`\`\`typescript // scripts/main.ts
 // code here

@@ -84,6 +84,19 @@ pub async fn start_engine(
         });
     }
 
+    // Read stderr to prevent pipe buffer from filling up and blocking the engine
+    let stderr = child.stderr.take();
+    if let Some(stderr) = stderr {
+        let win = window.clone();
+        tokio::spawn(async move {
+            let reader = tokio::io::BufReader::new(stderr);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let _ = win.emit("engine-log", line);
+            }
+        });
+    }
+
     {
         let mut child_lock = state.child.lock().map_err(|e| e.to_string())?;
         *child_lock = Some(child);
