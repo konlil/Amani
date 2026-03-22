@@ -33,10 +33,6 @@ interface AppState {
   engineRunning: boolean;
   setEngineRunning: (running: boolean) => void;
 
-  // Preview
-  screenshotUrl: string | null;
-  setScreenshotUrl: (url: string | null) => void;
-
   // UI
   splitRatio: number;
   setSplitRatio: (ratio: number) => void;
@@ -79,9 +75,6 @@ export const useAppStore = create<AppState>()(
 
   engineRunning: false,
   setEngineRunning: (running) => set({ engineRunning: running }),
-
-  screenshotUrl: null,
-  setScreenshotUrl: (url) => set({ screenshotUrl: url }),
 
   splitRatio: 0.4,
   setSplitRatio: (ratio) => set({ splitRatio: ratio }),

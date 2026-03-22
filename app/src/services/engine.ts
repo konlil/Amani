@@ -66,3 +66,17 @@ export async function compileProject(
 export async function getEngineDts(): Promise<string> {
   return invoke<string>("get_engine_dts");
 }
+
+export async function embedEngineWindow(): Promise<void> {
+  return invoke("embed_engine_window");
+}
+
+export async function updateEngineBounds(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  scaleFactor: number
+): Promise<void> {
+  return invoke("update_engine_bounds", { x, y, width, height, scaleFactor });
+}

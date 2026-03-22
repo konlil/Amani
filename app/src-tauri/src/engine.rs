@@ -2,14 +2,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, State, Window};
 use tokio::io::AsyncBufReadExt;
 use tokio::process::{Child, Command};
 
+#[cfg(target_os = "macos")]
+use crate::window_embed;
+
 pub struct EngineProcess {
     pub child: Mutex<Option<Child>>,
     pub project_path: Mutex<Option<PathBuf>>,
+    pub window_handle: Arc<Mutex<Option<u64>>>,
 }
 
 impl Default for EngineProcess {
@@ -17,6 +21,7 @@ impl Default for EngineProcess {
         Self {
             child: Mutex::new(None),
             project_path: Mutex::new(None),
+            window_handle: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -53,10 +58,18 @@ pub async fn start_engine(
 
     let bridge_path = bridge_project_path();
 
-    // Launch engine in watch mode
+    // Clear previous window handle
+    {
+        let mut wh = state.window_handle.lock().map_err(|e| e.to_string())?;
+        *wh = None;
+    }
+
+    // Launch engine in watch mode, positioned offscreen to avoid flicker
     let mut child = Command::new(&engine_path)
         .arg("--path")
         .arg(bridge_path.to_string_lossy().as_ref())
+        .arg("--position")
+        .arg("-10000,-10000")
         .arg("--")
         .arg("--project-dir")
         .arg(&game_project_path)
@@ -70,11 +83,25 @@ pub async fn start_engine(
     let stdout = child.stdout.take();
     if let Some(stdout) = stdout {
         let win = window.clone();
+        let wh = Arc::clone(&state.window_handle);
         tokio::spawn(async move {
             let reader = tokio::io::BufReader::new(stdout);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 if let Ok(json) = serde_json::from_str::<Value>(&line) {
+                    // Capture window handle reported by bridge.gd
+                    // GDScript prints the NSWindow pointer as a signed int,
+                    // so parse as i64 first then cast to u64.
+                    if json.get("type").and_then(|t| t.as_str()) == Some("window_handle") {
+                        let handle = json.get("handle")
+                            .and_then(|h| h.as_u64().or_else(|| h.as_i64().map(|v| v as u64)));
+                        if let Some(handle) = handle {
+                            if let Ok(mut lock) = wh.lock() {
+                                *lock = Some(handle);
+                            }
+                            let _ = win.emit("engine-window-handle", handle);
+                        }
+                    }
                     let _ = win.emit("engine-response", json);
                 } else {
                     let _ = win.emit("engine-log", line);
@@ -106,7 +133,22 @@ pub async fn start_engine(
 }
 
 #[tauri::command]
-pub async fn stop_engine(state: State<'_, EngineProcess>) -> Result<String, String> {
+pub async fn stop_engine(
+    _window: Window,
+    state: State<'_, EngineProcess>,
+) -> Result<String, String> {
+    // Detach file-based overlay
+    #[cfg(target_os = "macos")]
+    {
+        let _ = window_embed::detach_engine();
+    }
+
+    // Clear window handle
+    {
+        let mut wh = state.window_handle.lock().map_err(|e| e.to_string())?;
+        *wh = None;
+    }
+
     // Write quit command file
     let project_path = {
         let pp = state.project_path.lock().map_err(|e| e.to_string())?;
@@ -203,4 +245,168 @@ pub async fn engine_status(state: State<'_, EngineProcess>) -> Result<EngineStat
         running: child_lock.is_some(),
         project_path: pp.as_ref().map(|p| p.to_string_lossy().to_string()),
     })
+}
+
+/// Set up file-based window positioning bridge.
+/// Waits for Godot to report its window handle (confirming it's alive),
+/// then initializes the overlay state with the project path.
+#[tauri::command]
+pub async fn embed_engine_window(
+    window: Window,
+    state: State<'_, EngineProcess>,
+) -> Result<(), String> {
+    let wh_arc = Arc::clone(&state.window_handle);
+    let project_path = {
+        let pp = state.project_path.lock().map_err(|e| e.to_string())?;
+        pp.clone()
+    };
+
+    // Wait for Godot to be ready (it writes window_handle file on startup)
+    for _ in 0..50 {
+        if let Ok(lock) = wh_arc.lock() {
+            if lock.is_some() {
+                break;
+            }
+        }
+        if let Some(ref pp) = project_path {
+            let handle_file = pp.join("window_handle");
+            if let Ok(content) = tokio::fs::read_to_string(&handle_file).await {
+                if let Ok(h) = content.trim().parse::<i64>() {
+                    let h = h as u64;
+                    if let Ok(mut lock) = wh_arc.lock() {
+                        *lock = Some(h);
+                    }
+                    let _ = tokio::fs::remove_file(&handle_file).await;
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    // Confirm Godot is alive
+    {
+        let lock = wh_arc.lock().map_err(|e| e.to_string())?;
+        if lock.is_none() {
+            return Err("Timed out waiting for Godot window handle".into());
+        }
+    }
+
+    let pp = project_path.ok_or("No project path set")?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let ns_ptr = window.ns_window().map_err(|e| e.to_string())? as usize;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        window
+            .run_on_main_thread(move || {
+                let result = window_embed::embed_engine(ns_ptr, pp);
+                let _ = tx.send(result);
+            })
+            .map_err(|e| e.to_string())?;
+        rx.await
+            .map_err(|_| "main thread channel closed".to_string())??;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, pp);
+        return Err("Window embedding is only supported on macOS".into());
+    }
+
+    Ok(())
+}
+
+/// Update the embedded engine window position/size to match the preview panel.
+#[tauri::command]
+pub async fn update_engine_bounds(
+    window: Window,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    scale_factor: f64,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let ns_ptr = window.ns_window().map_err(|e| e.to_string())? as usize;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        window
+            .run_on_main_thread(move || {
+                let result =
+                    window_embed::update_engine_frame(ns_ptr, x, y, width, height, scale_factor);
+                let _ = tx.send(result);
+            })
+            .map_err(|e| e.to_string())?;
+        rx.await
+            .map_err(|_| "main thread channel closed".to_string())??;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, x, y, width, height, scale_factor);
+        return Err("Window embedding is only supported on macOS".into());
+    }
+
+    Ok(())
+}
+
+/// Reposition the engine overlay using the last saved bounds.
+/// Called when the Tauri window is dragged/moved.
+#[tauri::command]
+pub async fn reposition_engine_overlay(window: Window) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        window
+            .run_on_main_thread(move || {
+                let result = window_embed::reposition_to_last();
+                let _ = tx.send(result);
+            })
+            .map_err(|e| e.to_string())?;
+        rx.await
+            .map_err(|_| "main thread channel closed".to_string())??;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+    }
+
+    Ok(())
+}
+
+/// Show the engine overlay window (e.g. when the app regains focus).
+#[tauri::command]
+pub async fn show_engine_window(window: Window) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        window
+            .run_on_main_thread(move || {
+                let result = window_embed::show_engine();
+                let _ = tx.send(result);
+            })
+            .map_err(|e| e.to_string())?;
+        rx.await
+            .map_err(|_| "main thread channel closed".to_string())??;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+    }
+
+    Ok(())
+}
+
+/// Hide the engine overlay window (e.g. when the app loses focus).
+#[tauri::command]
+pub async fn hide_engine_window(_window: Window) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = window_embed::hide_engine();
+    }
+
+    Ok(())
 }

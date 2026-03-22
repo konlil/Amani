@@ -1,6 +1,8 @@
 mod engine;
 mod llm;
 mod project;
+#[cfg(target_os = "macos")]
+mod window_embed;
 
 use engine::EngineProcess;
 
@@ -16,6 +18,11 @@ pub fn run() {
             engine::engine_status,
             engine::send_engine_command,
             engine::poll_engine_result,
+            engine::embed_engine_window,
+            engine::update_engine_bounds,
+            engine::reposition_engine_overlay,
+            engine::show_engine_window,
+            engine::hide_engine_window,
             llm::chat_completion,
             project::create_project,
             project::open_project,

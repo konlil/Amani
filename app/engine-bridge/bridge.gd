@@ -37,6 +37,19 @@ func _ready():
 	if not js_file.is_empty():
 		_execute_and_screenshot()
 	elif mode == "watch":
+		# Borderless window — Tauri controls positioning via file
+		DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_BORDERLESS, true)
+
+		# Report window handle for embedding
+		var handle = DisplayServer.window_get_native_handle(DisplayServer.WINDOW_HANDLE)
+		# Write handle to file — stdout may be fully buffered when piped
+		var handle_file = project_dir + "/window_handle"
+		var hf = FileAccess.open(handle_file, FileAccess.WRITE)
+		if hf:
+			hf.store_string(str(handle))
+			hf.close()
+		print('{"type":"window_handle","handle":' + str(handle) + '}')
+
 		# Poll for command file every 0.5s
 		var timer = Timer.new()
 		timer.wait_time = 0.5
@@ -48,6 +61,24 @@ func _ready():
 func _process(delta):
 	if runtime and runtime.is_initialized():
 		runtime.tick_process(delta)
+
+	# Poll window_frame file for position/size updates from Tauri
+	if mode == "watch" and not project_dir.is_empty():
+		var frame_file = project_dir + "/window_frame"
+		if FileAccess.file_exists(frame_file):
+			var fa = FileAccess.open(frame_file, FileAccess.READ)
+			if fa:
+				var content = fa.get_as_text().strip_edges()
+				fa.close()
+				DirAccess.remove_absolute(frame_file)
+				var parts = content.split(",")
+				if parts.size() == 4:
+					var px = int(parts[0])
+					var py = int(parts[1])
+					var pw = int(parts[2])
+					var ph = int(parts[3])
+					DisplayServer.window_set_position(Vector2i(px, py))
+					DisplayServer.window_set_size(Vector2i(pw, ph))
 
 func _execute_and_screenshot():
 	# Load and execute JS
@@ -158,7 +189,6 @@ func _handle_command(cmd: Dictionary):
 				runtime.tick_process(get_process_delta_time())
 				await get_tree().process_frame
 
-			var screenshot_path = coordinator.take_screenshot()
 			var state = coordinator.get_scene_state()
 			var sjson = JSON.new()
 			sjson.parse(state)
@@ -166,17 +196,19 @@ func _handle_command(cmd: Dictionary):
 			_write_result({
 				"type": "compile_and_run",
 				"success": true,
-				"screenshot": screenshot_path,
 				"scene_state": sjson.get_data()
 			})
-
-		"screenshot":
-			var path = coordinator.take_screenshot()
-			_write_result({"type": "screenshot", "path": path})
 
 		"quit":
 			runtime.finalize()
 			get_tree().quit(0)
+
+		"show_window":
+			DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_MINIMIZED, false)
+			get_window().show()
+
+		"hide_window":
+			get_window().hide()
 
 func _write_result(data: Dictionary):
 	var result_file = project_dir + "/result.json"

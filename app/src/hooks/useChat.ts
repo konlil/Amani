@@ -184,7 +184,7 @@ export function useChat() {
 
         // If compile succeeded and engine path is configured, start engine and run
         if (result.success) {
-          const { llmConfig, engineRunning, setEngineRunning, setScreenshotUrl } = useAppStore.getState();
+          const { llmConfig, engineRunning, setEngineRunning } = useAppStore.getState();
           if (llmConfig.engine_path) {
             try {
               if (!engineRunning) {
@@ -203,11 +203,6 @@ export function useChat() {
                 const engineResult = await pollEngineResult();
                 if (engineResult) {
                   console.log("[useChat] engine result:", engineResult);
-                  const screenshotPath = engineResult.screenshot as string | undefined;
-                  if (screenshotPath) {
-                    // Use Tauri asset protocol to load local file
-                    setScreenshotUrl("asset://localhost/" + encodeURIComponent(screenshotPath) + "?t=" + Date.now());
-                  }
                   break;
                 }
               }
