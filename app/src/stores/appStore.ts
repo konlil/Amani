@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import type {
   ChatMessage,
   InfoMode,
@@ -43,7 +44,9 @@ interface AppState {
   setIsStreaming: (streaming: boolean) => void;
 }
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>()(
+  persist(
+    (set) => ({
   messages: [],
   addMessage: (msg) =>
     set((state) => ({ messages: [...state.messages, msg] })),
@@ -84,4 +87,13 @@ export const useAppStore = create<AppState>((set) => ({
 
   isStreaming: false,
   setIsStreaming: (streaming) => set({ isStreaming: streaming }),
-}));
+}),
+  {
+    name: "llm3d-settings",
+    partialize: (state) => ({
+      llmConfig: state.llmConfig,
+      infoMode: state.infoMode,
+      splitRatio: state.splitRatio,
+    }),
+  }
+));

@@ -46,11 +46,11 @@ export default function App() {
         ref={containerRef}
         style={{ cursor: isDragging ? "col-resize" : undefined }}
       >
-        <div style={{ width: `${splitRatio * 100}%`, minWidth: 0 }}>
+        <div style={{ width: `${splitRatio * 100}%`, minWidth: 0, height: "100%", overflow: "hidden" }}>
           <ChatPanel />
         </div>
         <div className="split-handle" onMouseDown={handleMouseDown} />
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ flex: 1, minWidth: 0, height: "100%", overflow: "hidden" }}>
           <PreviewPanel />
         </div>
       </div>

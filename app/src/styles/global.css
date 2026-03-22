@@ -113,6 +113,7 @@ html, body, #root {
   flex-direction: column;
   background: var(--bg-primary);
   overflow: hidden;
+  height: 100%;
 }
 
 .message-list {
@@ -122,6 +123,7 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 0;
 }
 
 .message-list::-webkit-scrollbar {

@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::process::Command;
 
+const ENGINE_CORE_DTS: &str = include_str!("../../../modules/quickjs_scripting/engine-core.d.ts");
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProjectInfo {
     pub name: String,
@@ -48,16 +50,31 @@ console.log("Hello from LLM3dEngine!");
     "module": "ES2020",
     "strict": true,
     "outDir": "build",
-    "rootDir": "scripts",
+    "rootDir": ".",
     "declaration": false,
     "skipLibCheck": true
   },
-  "include": ["scripts/**/*.ts"]
+  "include": ["scripts/**/*.ts", "engine-core.d.ts", "globals.d.ts"]
 }
 "#;
     fs::write(project_path.join("tsconfig.json"), tsconfig)
         .await
         .map_err(|e| format!("Failed to write tsconfig.json: {}", e))?;
+
+    // Copy engine-core.d.ts into project
+    fs::write(project_path.join("engine-core.d.ts"), ENGINE_CORE_DTS)
+        .await
+        .map_err(|e| format!("Failed to write engine-core.d.ts: {}", e))?;
+
+    // Create engine globals shim so Engine can be used as a value
+    let globals_dts = r#"// Engine runtime globals - allows using Engine.* as values
+declare const Engine: {
+    [key: string]: any;
+};
+"#;
+    fs::write(project_path.join("globals.d.ts"), globals_dts)
+        .await
+        .map_err(|e| format!("Failed to write globals.d.ts: {}", e))?;
 
     Ok(ProjectInfo {
         name,
@@ -120,12 +137,22 @@ pub async fn read_project_file(
 pub async fn compile_project(project_path: String) -> Result<CompileResult, String> {
     let project_dir = Path::new(&project_path);
 
-    // Run tsc
-    let output = Command::new("npx")
-        .arg("tsc")
+    // Use tsc with --project flag pointing to the game project's tsconfig
+    // Resolve tsc from the app's node_modules (sibling to src-tauri)
+    let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let local_tsc = app_dir.join("node_modules/.bin/tsc");
+
+    let tsc_cmd = if local_tsc.exists() {
+        local_tsc.to_string_lossy().to_string()
+    } else {
+        "tsc".to_string()
+    };
+
+    let output = Command::new(&tsc_cmd)
         .arg("--noEmit")
         .arg("--pretty")
-        .current_dir(project_dir)
+        .arg("--project")
+        .arg(project_dir.join("tsconfig.json"))
         .output()
         .await
         .map_err(|e| format!("Failed to run tsc: {}", e))?;

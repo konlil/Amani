@@ -1,0 +1,16 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
+    "core:webview:default",
+    "core:webview:allow-internal-toggle-devtools",
+    "shell:default",
+    "shell:allow-open",
+    "core:path:default"
+  ]
+}

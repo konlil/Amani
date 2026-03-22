@@ -1,5 +1,6 @@
 import type { ChatMessage } from "../../types";
 import { useAppStore } from "../../stores/appStore";
+import { useChat } from "../../hooks/useChat";
 
 function CodeBlock({ code, filename, language }: { code: string; filename: string; language: string }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -85,6 +86,7 @@ export default function ChatPanel() {
 function ChatInput() {
   const [input, setInput] = useState("");
   const { addMessage, isStreaming } = useAppStore();
+  const { sendMessage } = useChat();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleSend = () => {
@@ -98,6 +100,7 @@ function ChatInput() {
       timestamp: Date.now(),
     });
     setInput("");
+    sendMessage(text);
 
     // Reset textarea height
     if (textareaRef.current) {
