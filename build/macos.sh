@@ -41,7 +41,9 @@ scons platform="$PLATFORM" target="$TARGET" \
   module_cvtt_enabled=no \
   module_betsy_enabled=no \
   module_gridmap_enabled=no \
-  module_csg_enabled=no
+  module_csg_enabled=no \
+  \
+  custom_modules="$CUSTOM_MODULES"
 
 echo ""
 echo "=== Build Complete ==="
