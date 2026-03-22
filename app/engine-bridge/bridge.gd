@@ -1,23 +1,27 @@
 extends Node
 
-# LLM3dEngine Bridge
-# Accepts JSON commands via stdin, responds via stdout
-# Protocol: one JSON object per line (newline-delimited JSON)
+# LLM3dEngine Bridge — v1 simple mode
+# Accepts JS file path via command line, executes it, takes screenshot, quits
+# Usage: godot --path bridge_project -- --project-dir /path/to/game --run /path/to/main.js
 
 var coordinator: LLMCoordinator
 var runtime: QuickJSRuntime
 var project_dir: String = ""
-var running: bool = true
+var js_file: String = ""
+var mode: String = "run"  # "run" = execute+screenshot+quit, "watch" = stay alive and poll
 
 func _ready():
-	# Parse command-line args for project dir
-	var args = OS.get_cmdline_args()
+	var args = OS.get_cmdline_user_args()
 	for i in range(args.size()):
 		if args[i] == "--project-dir" and i + 1 < args.size():
 			project_dir = args[i + 1]
+		elif args[i] == "--run" and i + 1 < args.size():
+			js_file = args[i + 1]
+		elif args[i] == "--watch":
+			mode = "watch"
 
 	if project_dir.is_empty():
-		_send_response({"error": "No --project-dir specified"})
+		printerr("Error: --project-dir not specified")
 		get_tree().quit(1)
 		return
 
@@ -29,22 +33,73 @@ func _ready():
 	runtime = QuickJSRuntime.new()
 	runtime.initialize()
 
-	_send_response({"type": "ready", "project_dir": project_dir})
-	print("LLM3dEngine bridge ready, project: " + project_dir, " (stderr)")
+	if not js_file.is_empty():
+		_execute_and_screenshot()
+	elif mode == "watch":
+		# Poll for command file every 0.5s
+		var timer = Timer.new()
+		timer.wait_time = 0.5
+		timer.timeout.connect(_poll_command_file)
+		add_child(timer)
+		timer.start()
+		print('{"type":"ready","project_dir":"' + project_dir + '"}')
 
-func _process(_delta):
-	if not running:
+func _execute_and_screenshot():
+	# Load and execute JS
+	var fa = FileAccess.open(js_file, FileAccess.READ)
+	if fa == null:
+		printerr("Error: Cannot open JS file: " + js_file)
+		get_tree().quit(1)
 		return
 
-	# Read from stdin (non-blocking)
-	var line = _read_stdin_line()
-	if line.is_empty():
+	var js_code = fa.get_as_text()
+	fa.close()
+
+	var result = runtime.eval_string(js_code, js_file.get_file())
+	print('{"type":"execute_result","result":"' + str(result).replace('"', '\\"') + '"}')
+
+	# Wait 2 frames for scene to render, then screenshot
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+	var screenshot_path = coordinator.take_screenshot()
+	print('{"type":"screenshot","path":"' + screenshot_path + '"}')
+
+	if mode == "run":
+		# Write a result file that Tauri can read
+		var result_file = project_dir + "/last_run.json"
+		var out = FileAccess.open(result_file, FileAccess.WRITE)
+		if out:
+			var result_data = {
+				"success": true,
+				"screenshot": screenshot_path,
+				"js_file": js_file
+			}
+			out.store_string(JSON.stringify(result_data))
+			out.close()
+
+		runtime.finalize()
+		get_tree().quit(0)
+
+func _poll_command_file():
+	var cmd_file = project_dir + "/command.json"
+	if not FileAccess.file_exists(cmd_file):
 		return
+
+	var fa = FileAccess.open(cmd_file, FileAccess.READ)
+	if fa == null:
+		return
+
+	var content = fa.get_as_text()
+	fa.close()
+
+	# Delete command file after reading
+	DirAccess.remove_absolute(cmd_file)
 
 	var json = JSON.new()
-	var err = json.parse(line)
+	var err = json.parse(content)
 	if err != OK:
-		_send_response({"error": "Invalid JSON", "input": line})
+		printerr("Invalid command JSON: " + content)
 		return
 
 	var cmd = json.get_data()
@@ -54,99 +109,56 @@ func _handle_command(cmd: Dictionary):
 	var action = cmd.get("action", "")
 
 	match action:
-		"compile":
-			var result_json = coordinator.compile_and_check()
-			var json = JSON.new()
-			json.parse(result_json)
-			_send_response({"type": "compile_result", "data": json.get_data()})
-
-		"execute":
-			var js_file = cmd.get("file", "")
-			if js_file.is_empty():
-				# Default: execute all JS in build dir
-				js_file = project_dir + "/build/main.js"
-
-			var fa = FileAccess.open(js_file, FileAccess.READ)
-			if fa == null:
-				_send_response({"type": "execute_result", "success": false, "error": "Cannot open: " + js_file})
-				return
-
-			var js_code = fa.get_as_text()
-			fa.close()
-			var result = runtime.eval_string(js_code, js_file.get_file())
-			_send_response({"type": "execute_result", "success": true, "result": result})
-
-		"screenshot":
-			var width = cmd.get("width", 1280)
-			var height = cmd.get("height", 720)
-			var path = coordinator.take_screenshot(width, height)
-			_send_response({"type": "screenshot", "path": path})
-
-		"state":
-			var state_json = coordinator.get_scene_state()
-			var json = JSON.new()
-			json.parse(state_json)
-			_send_response({"type": "scene_state", "data": json.get_data()})
-
-		"feedback":
-			var feedback_json = coordinator.get_feedback()
-			var json = JSON.new()
-			json.parse(feedback_json)
-			_send_response({"type": "feedback", "data": json.get_data()})
-
 		"compile_and_run":
-			# Full pipeline: compile -> execute -> screenshot
-			var compile_json = coordinator.compile_and_check()
+			# Compile
+			var compile_result = coordinator.compile_and_check()
 			var cjson = JSON.new()
-			cjson.parse(compile_json)
-			var compile_data = cjson.get_data()
+			cjson.parse(compile_result)
+			var cdata = cjson.get_data()
 
-			if not compile_data.get("compile_success", false):
-				_send_response({"type": "compile_and_run", "stage": "compile", "success": false, "data": compile_data})
+			if not cdata.get("compile_success", false):
+				_write_result({"type": "compile_and_run", "success": false, "compile": cdata})
 				return
 
-			# Execute
-			var js_file = compile_data.get("output_dir", project_dir + "/build") + "/main.js"
-			var fa = FileAccess.open(js_file, FileAccess.READ)
+			# Find and execute JS
+			var output_dir = cdata.get("output_dir", project_dir + "/build")
+			var main_js = output_dir + "/main.js"
+			var fa = FileAccess.open(main_js, FileAccess.READ)
 			if fa == null:
-				_send_response({"type": "compile_and_run", "stage": "execute", "success": false, "error": "Cannot open: " + js_file})
+				_write_result({"type": "compile_and_run", "success": false, "error": "Cannot open " + main_js})
 				return
 
 			var js_code = fa.get_as_text()
 			fa.close()
 			runtime.eval_string(js_code, "main.js")
 
-			# Wait a frame for scene to update, then screenshot
 			await get_tree().process_frame
-			var screenshot_path = coordinator.take_screenshot()
-			var state_json = coordinator.get_scene_state()
-			var sjson = JSON.new()
-			sjson.parse(state_json)
+			await get_tree().process_frame
 
-			_send_response({
+			var screenshot_path = coordinator.take_screenshot()
+			var state = coordinator.get_scene_state()
+			var sjson = JSON.new()
+			sjson.parse(state)
+
+			_write_result({
 				"type": "compile_and_run",
-				"stage": "complete",
 				"success": true,
-				"compile": compile_data,
 				"screenshot": screenshot_path,
 				"scene_state": sjson.get_data()
 			})
 
+		"screenshot":
+			var path = coordinator.take_screenshot()
+			_write_result({"type": "screenshot", "path": path})
+
 		"quit":
-			running = false
 			runtime.finalize()
-			_send_response({"type": "quit"})
 			get_tree().quit(0)
 
-		_:
-			_send_response({"error": "Unknown action: " + action})
-
-func _send_response(data: Dictionary):
-	# Send JSON response on stdout, one line
+func _write_result(data: Dictionary):
+	var result_file = project_dir + "/result.json"
+	var fa = FileAccess.open(result_file, FileAccess.WRITE)
+	if fa:
+		fa.store_string(JSON.stringify(data))
+		fa.close()
 	print(JSON.stringify(data))
-
-func _read_stdin_line() -> String:
-	# Use OS.read_string_from_stdin if available, otherwise poll
-	if OS.has_method("read_string_from_stdin"):
-		return OS.read_string_from_stdin().strip_edges()
-	return ""

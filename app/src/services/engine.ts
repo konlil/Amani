@@ -23,6 +23,10 @@ export async function sendEngineCommand(command: Record<string, unknown>): Promi
   return invoke("send_engine_command", { command });
 }
 
+export async function pollEngineResult(): Promise<Record<string, unknown> | null> {
+  return invoke<Record<string, unknown> | null>("poll_engine_result");
+}
+
 export async function getEngineStatus(): Promise<EngineStatus> {
   return invoke<EngineStatus>("engine_status");
 }

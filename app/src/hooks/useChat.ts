@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../stores/appStore";
 import { chatCompletion, extractCodeBlocks } from "../services/llm";
-import { writeProjectFile, compileProject, createProject, startEngine, sendEngineCommand, getEngineStatus } from "../services/engine";
+import { writeProjectFile, compileProject, createProject, startEngine, sendEngineCommand, pollEngineResult } from "../services/engine";
 import { homeDir } from "@tauri-apps/api/path";
 
 const ENGINE_DTS_CONTEXT = `You are a game development assistant for LLM3dEngine.
@@ -105,18 +105,33 @@ export function useChat() {
 
         // If compile succeeded and engine path is configured, start engine and run
         if (result.success) {
-          const { llmConfig, engineRunning, setEngineRunning } = useAppStore.getState();
+          const { llmConfig, engineRunning, setEngineRunning, setScreenshotUrl } = useAppStore.getState();
           if (llmConfig.engine_path) {
             try {
               if (!engineRunning) {
                 await startEngine(llmConfig.engine_path, project.path);
                 setEngineRunning(true);
                 // Wait for engine to be ready
-                await new Promise((r) => setTimeout(r, 2000));
+                await new Promise((r) => setTimeout(r, 3000));
               }
-              // Send compile_and_run command
+              // Send compile_and_run command via file
               await sendEngineCommand({ action: "compile_and_run" });
               console.log("[useChat] sent compile_and_run to engine");
+
+              // Poll for result (up to 15 seconds)
+              for (let i = 0; i < 30; i++) {
+                await new Promise((r) => setTimeout(r, 500));
+                const engineResult = await pollEngineResult();
+                if (engineResult) {
+                  console.log("[useChat] engine result:", engineResult);
+                  const screenshotPath = engineResult.screenshot as string | undefined;
+                  if (screenshotPath) {
+                    // Use Tauri asset protocol to load local file
+                    setScreenshotUrl("asset://localhost/" + encodeURIComponent(screenshotPath) + "?t=" + Date.now());
+                  }
+                  break;
+                }
+              }
             } catch (e) {
               console.error("[useChat] engine error:", e);
             }

@@ -15,6 +15,7 @@ pub fn run() {
             engine::restart_engine,
             engine::engine_status,
             engine::send_engine_command,
+            engine::poll_engine_result,
             llm::chat_completion,
             project::create_project,
             project::open_project,
