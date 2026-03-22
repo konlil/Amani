@@ -3,6 +3,7 @@
 
 #include "core/object/ref_counted.h"
 #include "core/string/ustring.h"
+#include "scene/main/node.h"
 
 extern "C" {
 #include "quickjs.h"
@@ -15,6 +16,10 @@ class QuickJSRuntime : public RefCounted {
 	JSContext *ctx = nullptr;
 
 	bool initialized = false;
+	Node *scene_root = nullptr;
+
+	// Stored JS callback for _process(delta)
+	JSValue process_callback = JS_UNDEFINED;
 
 protected:
 	static void _bind_methods();
@@ -28,6 +33,9 @@ public:
 
 	String eval_string(const String &p_code, const String &p_filename = "<eval>");
 	bool is_initialized() const { return initialized; }
+
+	void set_scene_root(Node *p_root);
+	void tick_process(float p_delta);
 };
 
 #endif // QUICKJS_RUNTIME_H

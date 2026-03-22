@@ -4,10 +4,14 @@
 #ifndef QUICKJS_BINDING_GEN_H
 #define QUICKJS_BINDING_GEN_H
 
+#include "core/object/object.h"
+
 extern "C" {
 #include "quickjs.h"
 }
 
 void quickjs_register_generated_bindings(JSContext *ctx, JSValue global);
+JSValue wrap_godot_object(JSContext *ctx, Object *obj);
+JSClassID get_godot_obj_class_id();
 
 #endif // QUICKJS_BINDING_GEN_H

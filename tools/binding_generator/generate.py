@@ -74,6 +74,9 @@ GODOT_TO_CPP_TO_JS = {
     "void": "JS_UNDEFINED",
 }
 
+# Classes that should not be instantiated directly
+NON_INSTANTIABLE = {"SceneTree", "Viewport", "SubViewport"}
+
 
 def load_api(api_path):
     with open(api_path) as f:
@@ -85,30 +88,65 @@ def load_whitelist(config_path):
         return json.load(f)["classes"]
 
 
-def godot_type_to_ts(godot_type):
+def godot_type_to_ts(godot_type, whitelist=None):
     """Convert a Godot type name to TypeScript type."""
     if not godot_type:
         return "void"
-    # Handle enum types like "Node3D.RotationEditMode"
+    # Handle comma-separated type hints (e.g. "CameraAttributesPractical,CameraAttributesPhysical")
+    if "," in godot_type:
+        return "any"
     if "." in godot_type:
         return "number"
-    # Handle typed arrays
     if godot_type.startswith("typedarray::"):
         inner = godot_type.replace("typedarray::", "")
-        ts_inner = godot_type_to_ts(inner)
+        ts_inner = godot_type_to_ts(inner, whitelist)
         return f"{ts_inner}[]"
-    # Handle bitfield
     if godot_type.startswith("bitfield::"):
         return "number"
-    # Handle enum
     if godot_type.startswith("enum::"):
         return "number"
+    if whitelist and godot_type in whitelist:
+        return godot_type
     return GODOT_TO_TS.get(godot_type, godot_type)
 
 
 def is_primitive_type(godot_type):
     """Check if a type is a primitive that we can easily convert."""
     return godot_type in GODOT_TO_CPP_FROM_JS
+
+
+def is_object_type(godot_type, whitelist):
+    """Check if a type is a whitelisted engine Object type."""
+    return godot_type in whitelist
+
+
+def is_enum_type(godot_type):
+    """Check if a type is an enum or bitfield (treated as int)."""
+    return godot_type.startswith("enum::") or godot_type.startswith("bitfield::")
+
+
+def is_supported_arg_type(godot_type, whitelist):
+    """Check if a type is supported as argument (primitive, object, or enum)."""
+    return is_primitive_type(godot_type) or is_object_type(godot_type, whitelist) or is_enum_type(godot_type)
+
+
+def find_whitelisted_parent(cls_name, classes, whitelist):
+    """Walk up inheritance chain to find nearest whitelisted ancestor."""
+    if cls_name not in classes:
+        return ""
+    parent = classes[cls_name].get("inherits", "")
+    while parent:
+        if parent in whitelist:
+            return parent
+        if parent not in classes:
+            return ""
+        parent = classes[parent].get("inherits", "")
+    return ""
+
+
+def is_supported_ret_type(godot_type, whitelist):
+    """Check if a return type is supported."""
+    return godot_type in GODOT_TO_CPP_TO_JS or is_object_type(godot_type, whitelist) or is_enum_type(godot_type)
 
 
 def generate_ts_declarations(api, whitelist, output_path):
@@ -168,23 +206,26 @@ def generate_ts_declarations(api, whitelist, output_path):
     lines.append("    type PackedVector4Array = Vector4[];")
     lines.append("")
 
-    # Generate class declarations
+    # Generate class declarations (use class instead of interface for constructor support)
     for class_name in whitelist:
         if class_name not in classes:
             lines.append(f"    // WARNING: {class_name} not found in API")
             continue
 
         cls = classes[class_name]
-        inherits = cls.get("inherits", "")
-        extends = f" extends {inherits}" if inherits and inherits in whitelist else ""
+        parent = find_whitelisted_parent(class_name, classes, whitelist)
+        extends = f" extends {parent}" if parent else ""
 
-        lines.append(f"    interface {class_name}{extends} {{")
+        lines.append(f"    class {class_name}{extends} {{")
+
+        # Constructor for instantiable classes
+        if class_name not in NON_INSTANTIABLE:
+            lines.append(f"        constructor();")
 
         # Properties
         for prop in cls.get("properties", []):
             prop_name = prop["name"]
-            prop_type = godot_type_to_ts(prop.get("type", "Variant"))
-            # Skip properties with / in name (grouped properties)
+            prop_type = godot_type_to_ts(prop.get("type", "Variant"), whitelist)
             if "/" in prop_name:
                 continue
             lines.append(f"        {prop_name}: {prop_type};")
@@ -192,25 +233,21 @@ def generate_ts_declarations(api, whitelist, output_path):
         # Methods
         for method in cls.get("methods", []):
             method_name = method["name"]
-            # Skip virtual methods (start with _)
             if method_name.startswith("_"):
                 continue
-            # Skip vararg methods
             if method.get("is_vararg", False):
                 continue
 
-            # Build parameter list
             params = []
             for arg in method.get("arguments", []):
                 arg_name = arg["name"]
-                arg_type = godot_type_to_ts(arg.get("type", "Variant"))
+                arg_type = godot_type_to_ts(arg.get("type", "Variant"), whitelist)
                 has_default = "default_value" in arg
                 optional = "?" if has_default else ""
                 params.append(f"{arg_name}{optional}: {arg_type}")
 
-            # Return type
             ret = method.get("return_value", {})
-            ret_type = godot_type_to_ts(ret.get("type", "void"))
+            ret_type = godot_type_to_ts(ret.get("type", "void"), whitelist)
 
             params_str = ", ".join(params)
             lines.append(f"        {method_name}({params_str}): {ret_type};")
@@ -223,6 +260,14 @@ def generate_ts_declarations(api, whitelist, output_path):
         lines.append("    }")
         lines.append("")
 
+    # Engine global functions
+    lines.append("    function getSceneRoot(): Node;")
+    lines.append("    function onProcess(callback: (delta: number) => void): void;")
+    lines.append("    function createResource(className: string): any;")
+    lines.append("    function setProperty(obj: any, name: string, value: any): void;")
+    lines.append("    function getProperty(obj: any, name: string): any;")
+    lines.append("    function callMethod(obj: any, methodName: string, ...args: any[]): any;")
+    lines.append("")
     lines.append("}")
     lines.append("")
 
@@ -241,11 +286,15 @@ def generate_cpp_binding_header(api, whitelist, output_path):
     lines.append("#ifndef QUICKJS_BINDING_GEN_H")
     lines.append("#define QUICKJS_BINDING_GEN_H")
     lines.append("")
+    lines.append('#include "core/object/object.h"')
+    lines.append("")
     lines.append('extern "C" {')
     lines.append('#include "quickjs.h"')
     lines.append("}")
     lines.append("")
     lines.append("void quickjs_register_generated_bindings(JSContext *ctx, JSValue global);")
+    lines.append("JSValue wrap_godot_object(JSContext *ctx, Object *obj);")
+    lines.append("JSClassID get_godot_obj_class_id();")
     lines.append("")
     lines.append("#endif // QUICKJS_BINDING_GEN_H")
     lines.append("")
@@ -268,9 +317,12 @@ def generate_cpp_binding(api, whitelist, output_path):
     lines.append("")
     lines.append('#include "core/object/class_db.h"')
     lines.append('#include "core/variant/variant.h"')
+    lines.append('#include "core/object/ref_counted.h"')
     lines.append('#include "scene/main/node.h"')
     lines.append('#include "scene/main/scene_tree.h"')
     lines.append("")
+
+    # Helper functions
     lines.append("// Helper: convert JS string to Godot String")
     lines.append("static String js_to_string(JSContext *ctx, JSValueConst val) {")
     lines.append("    const char *str = JS_ToCString(ctx, val);")
@@ -300,15 +352,54 @@ def generate_cpp_binding(api, whitelist, output_path):
     lines.append("}")
     lines.append("")
 
-    # For each whitelisted class, generate a factory function
-    # that creates an instance and returns a JS object with bound methods
+    # Godot object class ID for QuickJS
+    lines.append("// Class ID for all wrapped Godot objects")
+    lines.append("static JSClassID godot_obj_class_id = 0;")
+    lines.append("")
+    lines.append("static JSClassDef godot_obj_class_def = {")
+    lines.append('    "GodotObject",')
+    lines.append("    .finalizer = nullptr,")
+    lines.append("};")
+    lines.append("")
+    lines.append("JSClassID get_godot_obj_class_id() { return godot_obj_class_id; }")
+    lines.append("")
+
+    # wrap_godot_object helper
+    lines.append("// Wrap a Godot Object* into a JS object with the correct prototype")
+    lines.append("JSValue wrap_godot_object(JSContext *ctx, Object *obj) {")
+    lines.append("    if (!obj) return JS_NULL;")
+    lines.append("    // If it's a RefCounted, add a reference so it stays alive while JS holds it")
+    lines.append("    RefCounted *rc = Object::cast_to<RefCounted>(obj);")
+    lines.append("    if (rc) { rc->reference(); }")
+    lines.append("    JSValue global = JS_GetGlobalObject(ctx);")
+    lines.append("    JSValue wrapper = JS_NewObjectClass(ctx, godot_obj_class_id);")
+    lines.append("    JS_SetOpaque(wrapper, obj);")
+    lines.append("    // Walk inheritance chain to find the best matching prototype")
+    lines.append("    StringName cn = obj->get_class();")
+    lines.append('    while (cn != StringName()) {')
+    lines.append('        String key = "_" + String(cn) + "_proto";')
+    lines.append("        JSValue proto = JS_GetPropertyStr(ctx, global, key.utf8().get_data());")
+    lines.append("        if (!JS_IsUndefined(proto)) {")
+    lines.append("            JS_SetPrototype(ctx, wrapper, proto);")
+    lines.append("            JS_FreeValue(ctx, proto);")
+    lines.append("            JS_FreeValue(ctx, global);")
+    lines.append("            return wrapper;")
+    lines.append("        }")
+    lines.append("        JS_FreeValue(ctx, proto);")
+    lines.append("        cn = ClassDB::get_parent_class(cn);")
+    lines.append("    }")
+    lines.append("    JS_FreeValue(ctx, global);")
+    lines.append("    return wrapper;")
+    lines.append("}")
+    lines.append("")
+
+    # For each whitelisted class, generate method bindings
     for class_name in whitelist:
         if class_name not in classes:
             continue
 
         cls = classes[class_name]
 
-        # Generate simple method bindings for methods with primitive types only
         bound_methods = []
         for method in cls.get("methods", []):
             method_name = method["name"]
@@ -319,14 +410,17 @@ def generate_cpp_binding(api, whitelist, output_path):
             if method.get("is_static", False):
                 continue
 
-            # Check if all argument types are primitive
             args = method.get("arguments", [])
-            all_primitive = all(is_primitive_type(a.get("type", "")) for a in args)
             ret = method.get("return_value", {})
             ret_type = ret.get("type", "void")
-            ret_primitive = ret_type in GODOT_TO_CPP_TO_JS
 
-            if not all_primitive or not ret_primitive:
+            # Check if all args are supported (primitive or object)
+            all_supported = all(
+                is_supported_arg_type(a.get("type", ""), whitelist) for a in args
+            )
+            ret_supported = is_supported_ret_type(ret_type, whitelist)
+
+            if not all_supported or not ret_supported:
                 continue
 
             bound_methods.append(method)
@@ -334,19 +428,25 @@ def generate_cpp_binding(api, whitelist, output_path):
             # Generate the C function
             func_name = f"js_{class_name}_{method_name}"
             lines.append(f"static JSValue {func_name}(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {{")
-            lines.append(f"    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));")
+            lines.append(f"    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));")
             lines.append(f"    if (!obj) return JS_EXCEPTION;")
             lines.append("")
 
             # Convert arguments
             for i, arg in enumerate(args):
                 arg_type = arg.get("type", "")
-                conversion = GODOT_TO_CPP_FROM_JS[arg_type].format(val=f"argv[{i}]")
-                cpp_type = "bool" if arg_type == "bool" else "int64_t" if arg_type == "int" else "double" if arg_type == "float" else "String"
-                lines.append(f"    {cpp_type} arg{i} = {conversion};")
+                if is_primitive_type(arg_type):
+                    conversion = GODOT_TO_CPP_FROM_JS[arg_type].format(val=f"argv[{i}]")
+                    cpp_type = "bool" if arg_type == "bool" else "int64_t" if arg_type == "int" else "double" if arg_type == "float" else "String"
+                    lines.append(f"    {cpp_type} arg{i} = {conversion};")
+                elif is_enum_type(arg_type):
+                    # Enums are just ints
+                    lines.append(f"    int64_t arg{i} = js_to_int(ctx, argv[{i}]);")
+                else:
+                    # Object type argument
+                    lines.append(f"    Object *arg{i} = static_cast<Object *>(JS_GetOpaque(argv[{i}], godot_obj_class_id));")
 
             # Call method via Variant call
-            arg_names = ", ".join(f"arg{i}" for i in range(len(args)))
             if ret_type == "void" or ret_type == "":
                 lines.append(f'    Callable::CallError ce;')
                 if args:
@@ -356,7 +456,8 @@ def generate_cpp_binding(api, whitelist, output_path):
                 else:
                     lines.append(f'    obj->callp("{method_name}", nullptr, 0, ce);')
                 lines.append(f"    return JS_UNDEFINED;")
-            else:
+            elif is_object_type(ret_type, whitelist):
+                # Return type is an engine object
                 lines.append(f'    Callable::CallError ce;')
                 if args:
                     lines.append(f'    Variant args[] = {{ {", ".join(f"Variant(arg{i})" for i in range(len(args)))} }};')
@@ -364,29 +465,85 @@ def generate_cpp_binding(api, whitelist, output_path):
                     lines.append(f'    Variant ret = obj->callp("{method_name}", argptrs, {len(args)}, ce);')
                 else:
                     lines.append(f'    Variant ret = obj->callp("{method_name}", nullptr, 0, ce);')
-                to_js = GODOT_TO_CPP_TO_JS[ret_type].format(val=f"({('bool' if ret_type == 'bool' else 'int64_t' if ret_type == 'int' else 'double' if ret_type == 'float' else 'String')})ret")
+                lines.append(f"    Object *ret_obj = ret.operator Object *();")
+                lines.append(f"    return wrap_godot_object(ctx, ret_obj);")
+            elif is_enum_type(ret_type):
+                # Enum return type — treat as int
+                lines.append(f'    Callable::CallError ce;')
+                if args:
+                    lines.append(f'    Variant args[] = {{ {", ".join(f"Variant(arg{i})" for i in range(len(args)))} }};')
+                    lines.append(f'    const Variant *argptrs[] = {{ {", ".join(f"&args[{i}]" for i in range(len(args)))} }};')
+                    lines.append(f'    Variant ret = obj->callp("{method_name}", argptrs, {len(args)}, ce);')
+                else:
+                    lines.append(f'    Variant ret = obj->callp("{method_name}", nullptr, 0, ce);')
+                lines.append(f"    return JS_NewInt64(ctx, (int64_t)ret);")
+            else:
+                # Primitive return type
+                lines.append(f'    Callable::CallError ce;')
+                if args:
+                    lines.append(f'    Variant args[] = {{ {", ".join(f"Variant(arg{i})" for i in range(len(args)))} }};')
+                    lines.append(f'    const Variant *argptrs[] = {{ {", ".join(f"&args[{i}]" for i in range(len(args)))} }};')
+                    lines.append(f'    Variant ret = obj->callp("{method_name}", argptrs, {len(args)}, ce);')
+                else:
+                    lines.append(f'    Variant ret = obj->callp("{method_name}", nullptr, 0, ce);')
+                cast = 'bool' if ret_type == 'bool' else 'int64_t' if ret_type == 'int' else 'double' if ret_type == 'float' else 'String'
+                to_js = GODOT_TO_CPP_TO_JS[ret_type].format(val=f"({cast})ret")
                 lines.append(f"    return {to_js};")
 
             lines.append("}")
             lines.append("")
 
+        # Generate constructor for instantiable classes
+        if class_name not in NON_INSTANTIABLE:
+            lines.append(f"static JSValue js_{class_name}_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {{")
+            lines.append(f'    Object *obj = ClassDB::instantiate("{class_name}");')
+            lines.append(f"    return wrap_godot_object(ctx, obj);")
+            lines.append("}")
+            lines.append("")
+
         # Generate class prototype setup
-        lines.append(f"static void quickjs_register_{class_name}(JSContext *ctx, JSValue global) {{")
+        lines.append(f"static void quickjs_register_{class_name}(JSContext *ctx, JSValue global, JSValue engine_ns) {{")
         lines.append(f'    JSValue proto = JS_NewObject(ctx);')
+
+        # Set parent prototype for inheritance
+        parent = find_whitelisted_parent(class_name, classes, whitelist)
+        if parent:
+            lines.append(f'    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_{parent}_proto");')
+            lines.append(f'    if (!JS_IsUndefined(parent_proto)) {{')
+            lines.append(f'        JS_SetPrototype(ctx, proto, parent_proto);')
+            lines.append(f'    }}')
+            lines.append(f'    JS_FreeValue(ctx, parent_proto);')
+
         for method in bound_methods:
             method_name = method["name"]
             func_name = f"js_{class_name}_{method_name}"
             argc = len(method.get("arguments", []))
             lines.append(f'    JS_SetPropertyStr(ctx, proto, "{method_name}", JS_NewCFunction(ctx, {func_name}, "{method_name}", {argc}));')
         lines.append(f'    JS_SetPropertyStr(ctx, global, "_{class_name}_proto", proto);')
+
+        # Register constructor on Engine namespace
+        if class_name not in NON_INSTANTIABLE:
+            lines.append(f'    JSValue ctor = JS_NewCFunction2(ctx, js_{class_name}_constructor, "{class_name}", 0, JS_CFUNC_constructor, 0);')
+            lines.append(f'    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));')
+            lines.append(f'    JS_SetPropertyStr(ctx, engine_ns, "{class_name}", ctor);')
+
         lines.append("}")
         lines.append("")
 
     # Generate main registration function
     lines.append("void quickjs_register_generated_bindings(JSContext *ctx, JSValue global) {")
+    lines.append("    // Register Godot object class")
+    lines.append("    JS_NewClassID(&godot_obj_class_id);")
+    lines.append("    JS_NewClass(JS_GetRuntime(ctx), godot_obj_class_id, &godot_obj_class_def);")
+    lines.append("")
+    lines.append("    // Create Engine namespace")
+    lines.append("    JSValue engine_ns = JS_NewObject(ctx);")
+    lines.append("")
     for class_name in whitelist:
         if class_name in classes:
-            lines.append(f"    quickjs_register_{class_name}(ctx, global);")
+            lines.append(f"    quickjs_register_{class_name}(ctx, global, engine_ns);")
+    lines.append("")
+    lines.append('    JS_SetPropertyStr(ctx, global, "Engine", engine_ns);')
     lines.append("}")
     lines.append("")
 

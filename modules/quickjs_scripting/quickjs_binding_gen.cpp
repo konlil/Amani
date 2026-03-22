@@ -5,6 +5,7 @@
 
 #include "core/object/class_db.h"
 #include "core/variant/variant.h"
+#include "core/object/ref_counted.h"
 #include "scene/main/node.h"
 #include "scene/main/scene_tree.h"
 
@@ -36,8 +37,58 @@ static double js_to_float(JSContext *ctx, JSValueConst val) {
     return result;
 }
 
+// Class ID for all wrapped Godot objects
+static JSClassID godot_obj_class_id = 0;
+
+static JSClassDef godot_obj_class_def = {
+    "GodotObject",
+    .finalizer = nullptr,
+};
+
+JSClassID get_godot_obj_class_id() { return godot_obj_class_id; }
+
+// Wrap a Godot Object* into a JS object with the correct prototype
+JSValue wrap_godot_object(JSContext *ctx, Object *obj) {
+    if (!obj) return JS_NULL;
+    // If it's a RefCounted, add a reference so it stays alive while JS holds it
+    RefCounted *rc = Object::cast_to<RefCounted>(obj);
+    if (rc) { rc->reference(); }
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue wrapper = JS_NewObjectClass(ctx, godot_obj_class_id);
+    JS_SetOpaque(wrapper, obj);
+    // Walk inheritance chain to find the best matching prototype
+    StringName cn = obj->get_class();
+    while (cn != StringName()) {
+        String key = "_" + String(cn) + "_proto";
+        JSValue proto = JS_GetPropertyStr(ctx, global, key.utf8().get_data());
+        if (!JS_IsUndefined(proto)) {
+            JS_SetPrototype(ctx, wrapper, proto);
+            JS_FreeValue(ctx, proto);
+            JS_FreeValue(ctx, global);
+            return wrapper;
+        }
+        JS_FreeValue(ctx, proto);
+        cn = ClassDB::get_parent_class(cn);
+    }
+    JS_FreeValue(ctx, global);
+    return wrapper;
+}
+
+static JSValue js_Node_add_sibling(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    bool arg1 = JS_ToBool(ctx, argv[1]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1) };
+    const Variant *argptrs[] = { &args[0], &args[1] };
+    obj->callp("add_sibling", argptrs, 2, ce);
+    return JS_UNDEFINED;
+}
+
 static JSValue js_Node_set_name(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = js_to_string(ctx, argv[0]);
@@ -49,7 +100,7 @@ static JSValue js_Node_set_name(JSContext *ctx, JSValueConst this_val, int argc,
 }
 
 static JSValue js_Node_get_name(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -57,8 +108,47 @@ static JSValue js_Node_get_name(JSContext *ctx, JSValueConst this_val, int argc,
     return string_to_js(ctx, String((String)ret));
 }
 
+static JSValue js_Node_add_child(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    bool arg1 = JS_ToBool(ctx, argv[1]);
+    int64_t arg2 = js_to_int(ctx, argv[2]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1), Variant(arg2) };
+    const Variant *argptrs[] = { &args[0], &args[1], &args[2] };
+    obj->callp("add_child", argptrs, 3, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Node_remove_child(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("remove_child", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Node_reparent(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    bool arg1 = JS_ToBool(ctx, argv[1]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1) };
+    const Variant *argptrs[] = { &args[0], &args[1] };
+    obj->callp("reparent", argptrs, 2, ce);
+    return JS_UNDEFINED;
+}
+
 static JSValue js_Node_get_child_count(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -69,8 +159,22 @@ static JSValue js_Node_get_child_count(JSContext *ctx, JSValueConst this_val, in
     return JS_NewInt64(ctx, (int64_t)ret);
 }
 
+static JSValue js_Node_get_child(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    bool arg1 = JS_ToBool(ctx, argv[1]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1) };
+    const Variant *argptrs[] = { &args[0], &args[1] };
+    Variant ret = obj->callp("get_child", argptrs, 2, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
 static JSValue js_Node_has_node(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = NodePath(js_to_string(ctx, argv[0]));
@@ -81,8 +185,72 @@ static JSValue js_Node_has_node(JSContext *ctx, JSValueConst this_val, int argc,
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Node_get_node(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    String arg0 = NodePath(js_to_string(ctx, argv[0]));
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    Variant ret = obj->callp("get_node", argptrs, 1, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
+static JSValue js_Node_get_node_or_null(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    String arg0 = NodePath(js_to_string(ctx, argv[0]));
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    Variant ret = obj->callp("get_node_or_null", argptrs, 1, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
+static JSValue js_Node_get_parent(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_parent", nullptr, 0, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
+static JSValue js_Node_find_child(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    String arg0 = js_to_string(ctx, argv[0]);
+    bool arg1 = JS_ToBool(ctx, argv[1]);
+    bool arg2 = JS_ToBool(ctx, argv[2]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1), Variant(arg2) };
+    const Variant *argptrs[] = { &args[0], &args[1], &args[2] };
+    Variant ret = obj->callp("find_child", argptrs, 3, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
+static JSValue js_Node_find_parent(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    String arg0 = js_to_string(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    Variant ret = obj->callp("find_parent", argptrs, 1, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
 static JSValue js_Node_has_node_and_resource(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = NodePath(js_to_string(ctx, argv[0]));
@@ -94,7 +262,7 @@ static JSValue js_Node_has_node_and_resource(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Node_is_inside_tree(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -103,7 +271,7 @@ static JSValue js_Node_is_inside_tree(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Node_is_part_of_edited_scene(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -111,8 +279,32 @@ static JSValue js_Node_is_part_of_edited_scene(JSContext *ctx, JSValueConst this
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Node_is_ancestor_of(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    Variant ret = obj->callp("is_ancestor_of", argptrs, 1, ce);
+    return JS_NewBool(ctx, (bool)ret);
+}
+
+static JSValue js_Node_is_greater_than(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    Variant ret = obj->callp("is_greater_than", argptrs, 1, ce);
+    return JS_NewBool(ctx, (bool)ret);
+}
+
 static JSValue js_Node_get_path(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -120,8 +312,21 @@ static JSValue js_Node_get_path(JSContext *ctx, JSValueConst this_val, int argc,
     return string_to_js(ctx, String((String)ret));
 }
 
+static JSValue js_Node_get_path_to(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    bool arg1 = JS_ToBool(ctx, argv[1]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1) };
+    const Variant *argptrs[] = { &args[0], &args[1] };
+    Variant ret = obj->callp("get_path_to", argptrs, 2, ce);
+    return string_to_js(ctx, String((String)ret));
+}
+
 static JSValue js_Node_add_to_group(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -134,7 +339,7 @@ static JSValue js_Node_add_to_group(JSContext *ctx, JSValueConst this_val, int a
 }
 
 static JSValue js_Node_remove_from_group(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -146,7 +351,7 @@ static JSValue js_Node_remove_from_group(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_Node_is_in_group(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -157,8 +362,43 @@ static JSValue js_Node_is_in_group(JSContext *ctx, JSValueConst this_val, int ar
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Node_move_child(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    int64_t arg1 = js_to_int(ctx, argv[1]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1) };
+    const Variant *argptrs[] = { &args[0], &args[1] };
+    obj->callp("move_child", argptrs, 2, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Node_set_owner(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_owner", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Node_get_owner(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_owner", nullptr, 0, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
 static JSValue js_Node_get_index(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -170,7 +410,7 @@ static JSValue js_Node_get_index(JSContext *ctx, JSValueConst this_val, int argc
 }
 
 static JSValue js_Node_print_tree(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -179,7 +419,7 @@ static JSValue js_Node_print_tree(JSContext *ctx, JSValueConst this_val, int arg
 }
 
 static JSValue js_Node_print_tree_pretty(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -188,7 +428,7 @@ static JSValue js_Node_print_tree_pretty(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_Node_get_tree_string(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -197,7 +437,7 @@ static JSValue js_Node_get_tree_string(JSContext *ctx, JSValueConst this_val, in
 }
 
 static JSValue js_Node_get_tree_string_pretty(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -206,7 +446,7 @@ static JSValue js_Node_get_tree_string_pretty(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Node_set_scene_file_path(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = js_to_string(ctx, argv[0]);
@@ -218,7 +458,7 @@ static JSValue js_Node_set_scene_file_path(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_Node_get_scene_file_path(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -227,7 +467,7 @@ static JSValue js_Node_get_scene_file_path(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_Node_propagate_notification(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -239,7 +479,7 @@ static JSValue js_Node_propagate_notification(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Node_set_physics_process(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -251,7 +491,7 @@ static JSValue js_Node_set_physics_process(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_Node_get_physics_process_delta_time(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -260,7 +500,7 @@ static JSValue js_Node_get_physics_process_delta_time(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_Node_is_physics_processing(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -269,7 +509,7 @@ static JSValue js_Node_is_physics_processing(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Node_get_process_delta_time(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -278,7 +518,7 @@ static JSValue js_Node_get_process_delta_time(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Node_set_process(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -290,7 +530,7 @@ static JSValue js_Node_set_process(JSContext *ctx, JSValueConst this_val, int ar
 }
 
 static JSValue js_Node_set_process_priority(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -302,7 +542,7 @@ static JSValue js_Node_set_process_priority(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_Node_get_process_priority(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -311,7 +551,7 @@ static JSValue js_Node_get_process_priority(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_Node_set_physics_process_priority(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -323,7 +563,7 @@ static JSValue js_Node_set_physics_process_priority(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_Node_get_physics_process_priority(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -332,7 +572,7 @@ static JSValue js_Node_get_physics_process_priority(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_Node_is_processing(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -341,7 +581,7 @@ static JSValue js_Node_is_processing(JSContext *ctx, JSValueConst this_val, int 
 }
 
 static JSValue js_Node_set_process_input(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -353,7 +593,7 @@ static JSValue js_Node_set_process_input(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_Node_is_processing_input(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -362,7 +602,7 @@ static JSValue js_Node_is_processing_input(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_Node_set_process_shortcut_input(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -374,7 +614,7 @@ static JSValue js_Node_set_process_shortcut_input(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_Node_is_processing_shortcut_input(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -383,7 +623,7 @@ static JSValue js_Node_is_processing_shortcut_input(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_Node_set_process_unhandled_input(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -395,7 +635,7 @@ static JSValue js_Node_set_process_unhandled_input(JSContext *ctx, JSValueConst 
 }
 
 static JSValue js_Node_is_processing_unhandled_input(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -404,7 +644,7 @@ static JSValue js_Node_is_processing_unhandled_input(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_Node_set_process_unhandled_key_input(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -416,7 +656,7 @@ static JSValue js_Node_set_process_unhandled_key_input(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_Node_is_processing_unhandled_key_input(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -424,8 +664,29 @@ static JSValue js_Node_is_processing_unhandled_key_input(JSContext *ctx, JSValue
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Node_set_process_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_process_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Node_get_process_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_process_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Node_can_process(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -433,8 +694,50 @@ static JSValue js_Node_can_process(JSContext *ctx, JSValueConst this_val, int ar
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Node_set_process_thread_group(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_process_thread_group", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Node_get_process_thread_group(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_process_thread_group", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Node_set_process_thread_messages(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_process_thread_messages", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Node_get_process_thread_messages(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_process_thread_messages", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Node_set_process_thread_group_order(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -446,7 +749,7 @@ static JSValue js_Node_set_process_thread_group_order(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_Node_get_process_thread_group_order(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -455,7 +758,7 @@ static JSValue js_Node_get_process_thread_group_order(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_Node_set_display_folded(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -467,7 +770,7 @@ static JSValue js_Node_set_display_folded(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_Node_is_displayed_folded(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -476,7 +779,7 @@ static JSValue js_Node_is_displayed_folded(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_Node_set_process_internal(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -488,7 +791,7 @@ static JSValue js_Node_set_process_internal(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_Node_is_processing_internal(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -497,7 +800,7 @@ static JSValue js_Node_is_processing_internal(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Node_set_physics_process_internal(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -509,7 +812,7 @@ static JSValue js_Node_set_physics_process_internal(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_Node_is_physics_processing_internal(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -517,8 +820,29 @@ static JSValue js_Node_is_physics_processing_internal(JSContext *ctx, JSValueCon
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Node_set_physics_interpolation_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_physics_interpolation_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Node_get_physics_interpolation_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_physics_interpolation_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Node_is_physics_interpolated(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -527,7 +851,7 @@ static JSValue js_Node_is_physics_interpolated(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_Node_is_physics_interpolated_and_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -536,7 +860,7 @@ static JSValue js_Node_is_physics_interpolated_and_enabled(JSContext *ctx, JSVal
 }
 
 static JSValue js_Node_reset_physics_interpolation(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -544,8 +868,29 @@ static JSValue js_Node_reset_physics_interpolation(JSContext *ctx, JSValueConst 
     return JS_UNDEFINED;
 }
 
+static JSValue js_Node_set_auto_translate_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_auto_translate_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Node_get_auto_translate_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_auto_translate_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Node_set_translation_domain_inherited(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -553,8 +898,44 @@ static JSValue js_Node_set_translation_domain_inherited(JSContext *ctx, JSValueC
     return JS_UNDEFINED;
 }
 
+static JSValue js_Node_get_tree(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_tree", nullptr, 0, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
+static JSValue js_Node_duplicate(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    Variant ret = obj->callp("duplicate", argptrs, 1, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
+static JSValue js_Node_replace_by(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    bool arg1 = JS_ToBool(ctx, argv[1]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1) };
+    const Variant *argptrs[] = { &args[0], &args[1] };
+    obj->callp("replace_by", argptrs, 2, ce);
+    return JS_UNDEFINED;
+}
+
 static JSValue js_Node_set_scene_instance_load_placeholder(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -566,7 +947,7 @@ static JSValue js_Node_set_scene_instance_load_placeholder(JSContext *ctx, JSVal
 }
 
 static JSValue js_Node_get_scene_instance_load_placeholder(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -574,8 +955,43 @@ static JSValue js_Node_get_scene_instance_load_placeholder(JSContext *ctx, JSVal
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Node_set_editable_instance(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    bool arg1 = JS_ToBool(ctx, argv[1]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1) };
+    const Variant *argptrs[] = { &args[0], &args[1] };
+    obj->callp("set_editable_instance", argptrs, 2, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Node_is_editable_instance(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    Variant ret = obj->callp("is_editable_instance", argptrs, 1, ce);
+    return JS_NewBool(ctx, (bool)ret);
+}
+
+static JSValue js_Node_get_viewport(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_viewport", nullptr, 0, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
 static JSValue js_Node_queue_free(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -584,7 +1000,7 @@ static JSValue js_Node_queue_free(JSContext *ctx, JSValueConst this_val, int arg
 }
 
 static JSValue js_Node_request_ready(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -593,7 +1009,7 @@ static JSValue js_Node_request_ready(JSContext *ctx, JSValueConst this_val, int 
 }
 
 static JSValue js_Node_is_node_ready(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -602,7 +1018,7 @@ static JSValue js_Node_is_node_ready(JSContext *ctx, JSValueConst this_val, int 
 }
 
 static JSValue js_Node_set_multiplayer_authority(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -615,7 +1031,7 @@ static JSValue js_Node_set_multiplayer_authority(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_Node_get_multiplayer_authority(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -624,7 +1040,7 @@ static JSValue js_Node_get_multiplayer_authority(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_Node_is_multiplayer_authority(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -633,7 +1049,7 @@ static JSValue js_Node_is_multiplayer_authority(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_Node_set_editor_description(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = js_to_string(ctx, argv[0]);
@@ -645,7 +1061,7 @@ static JSValue js_Node_set_editor_description(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Node_get_editor_description(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -654,7 +1070,7 @@ static JSValue js_Node_get_editor_description(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Node_set_unique_name_in_owner(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -666,7 +1082,7 @@ static JSValue js_Node_set_unique_name_in_owner(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_Node_is_unique_name_in_owner(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -675,7 +1091,7 @@ static JSValue js_Node_is_unique_name_in_owner(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_Node_atr(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = js_to_string(ctx, argv[0]);
@@ -688,7 +1104,7 @@ static JSValue js_Node_atr(JSContext *ctx, JSValueConst this_val, int argc, JSVa
 }
 
 static JSValue js_Node_atr_n(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = js_to_string(ctx, argv[0]);
@@ -703,7 +1119,7 @@ static JSValue js_Node_atr_n(JSContext *ctx, JSValueConst this_val, int argc, JS
 }
 
 static JSValue js_Node_update_configuration_warnings(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -712,7 +1128,7 @@ static JSValue js_Node_update_configuration_warnings(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_Node_notify_deferred_thread_group(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -724,7 +1140,7 @@ static JSValue js_Node_notify_deferred_thread_group(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_Node_notify_thread_safe(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -735,19 +1151,40 @@ static JSValue js_Node_notify_thread_safe(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-static void quickjs_register_Node(JSContext *ctx, JSValue global) {
+static JSValue js_Node_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("Node");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_Node(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, proto, "add_sibling", JS_NewCFunction(ctx, js_Node_add_sibling, "add_sibling", 2));
     JS_SetPropertyStr(ctx, proto, "set_name", JS_NewCFunction(ctx, js_Node_set_name, "set_name", 1));
     JS_SetPropertyStr(ctx, proto, "get_name", JS_NewCFunction(ctx, js_Node_get_name, "get_name", 0));
+    JS_SetPropertyStr(ctx, proto, "add_child", JS_NewCFunction(ctx, js_Node_add_child, "add_child", 3));
+    JS_SetPropertyStr(ctx, proto, "remove_child", JS_NewCFunction(ctx, js_Node_remove_child, "remove_child", 1));
+    JS_SetPropertyStr(ctx, proto, "reparent", JS_NewCFunction(ctx, js_Node_reparent, "reparent", 2));
     JS_SetPropertyStr(ctx, proto, "get_child_count", JS_NewCFunction(ctx, js_Node_get_child_count, "get_child_count", 1));
+    JS_SetPropertyStr(ctx, proto, "get_child", JS_NewCFunction(ctx, js_Node_get_child, "get_child", 2));
     JS_SetPropertyStr(ctx, proto, "has_node", JS_NewCFunction(ctx, js_Node_has_node, "has_node", 1));
+    JS_SetPropertyStr(ctx, proto, "get_node", JS_NewCFunction(ctx, js_Node_get_node, "get_node", 1));
+    JS_SetPropertyStr(ctx, proto, "get_node_or_null", JS_NewCFunction(ctx, js_Node_get_node_or_null, "get_node_or_null", 1));
+    JS_SetPropertyStr(ctx, proto, "get_parent", JS_NewCFunction(ctx, js_Node_get_parent, "get_parent", 0));
+    JS_SetPropertyStr(ctx, proto, "find_child", JS_NewCFunction(ctx, js_Node_find_child, "find_child", 3));
+    JS_SetPropertyStr(ctx, proto, "find_parent", JS_NewCFunction(ctx, js_Node_find_parent, "find_parent", 1));
     JS_SetPropertyStr(ctx, proto, "has_node_and_resource", JS_NewCFunction(ctx, js_Node_has_node_and_resource, "has_node_and_resource", 1));
     JS_SetPropertyStr(ctx, proto, "is_inside_tree", JS_NewCFunction(ctx, js_Node_is_inside_tree, "is_inside_tree", 0));
     JS_SetPropertyStr(ctx, proto, "is_part_of_edited_scene", JS_NewCFunction(ctx, js_Node_is_part_of_edited_scene, "is_part_of_edited_scene", 0));
+    JS_SetPropertyStr(ctx, proto, "is_ancestor_of", JS_NewCFunction(ctx, js_Node_is_ancestor_of, "is_ancestor_of", 1));
+    JS_SetPropertyStr(ctx, proto, "is_greater_than", JS_NewCFunction(ctx, js_Node_is_greater_than, "is_greater_than", 1));
     JS_SetPropertyStr(ctx, proto, "get_path", JS_NewCFunction(ctx, js_Node_get_path, "get_path", 0));
+    JS_SetPropertyStr(ctx, proto, "get_path_to", JS_NewCFunction(ctx, js_Node_get_path_to, "get_path_to", 2));
     JS_SetPropertyStr(ctx, proto, "add_to_group", JS_NewCFunction(ctx, js_Node_add_to_group, "add_to_group", 2));
     JS_SetPropertyStr(ctx, proto, "remove_from_group", JS_NewCFunction(ctx, js_Node_remove_from_group, "remove_from_group", 1));
     JS_SetPropertyStr(ctx, proto, "is_in_group", JS_NewCFunction(ctx, js_Node_is_in_group, "is_in_group", 1));
+    JS_SetPropertyStr(ctx, proto, "move_child", JS_NewCFunction(ctx, js_Node_move_child, "move_child", 2));
+    JS_SetPropertyStr(ctx, proto, "set_owner", JS_NewCFunction(ctx, js_Node_set_owner, "set_owner", 1));
+    JS_SetPropertyStr(ctx, proto, "get_owner", JS_NewCFunction(ctx, js_Node_get_owner, "get_owner", 0));
     JS_SetPropertyStr(ctx, proto, "get_index", JS_NewCFunction(ctx, js_Node_get_index, "get_index", 1));
     JS_SetPropertyStr(ctx, proto, "print_tree", JS_NewCFunction(ctx, js_Node_print_tree, "print_tree", 0));
     JS_SetPropertyStr(ctx, proto, "print_tree_pretty", JS_NewCFunction(ctx, js_Node_print_tree_pretty, "print_tree_pretty", 0));
@@ -774,7 +1211,13 @@ static void quickjs_register_Node(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "is_processing_unhandled_input", JS_NewCFunction(ctx, js_Node_is_processing_unhandled_input, "is_processing_unhandled_input", 0));
     JS_SetPropertyStr(ctx, proto, "set_process_unhandled_key_input", JS_NewCFunction(ctx, js_Node_set_process_unhandled_key_input, "set_process_unhandled_key_input", 1));
     JS_SetPropertyStr(ctx, proto, "is_processing_unhandled_key_input", JS_NewCFunction(ctx, js_Node_is_processing_unhandled_key_input, "is_processing_unhandled_key_input", 0));
+    JS_SetPropertyStr(ctx, proto, "set_process_mode", JS_NewCFunction(ctx, js_Node_set_process_mode, "set_process_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_process_mode", JS_NewCFunction(ctx, js_Node_get_process_mode, "get_process_mode", 0));
     JS_SetPropertyStr(ctx, proto, "can_process", JS_NewCFunction(ctx, js_Node_can_process, "can_process", 0));
+    JS_SetPropertyStr(ctx, proto, "set_process_thread_group", JS_NewCFunction(ctx, js_Node_set_process_thread_group, "set_process_thread_group", 1));
+    JS_SetPropertyStr(ctx, proto, "get_process_thread_group", JS_NewCFunction(ctx, js_Node_get_process_thread_group, "get_process_thread_group", 0));
+    JS_SetPropertyStr(ctx, proto, "set_process_thread_messages", JS_NewCFunction(ctx, js_Node_set_process_thread_messages, "set_process_thread_messages", 1));
+    JS_SetPropertyStr(ctx, proto, "get_process_thread_messages", JS_NewCFunction(ctx, js_Node_get_process_thread_messages, "get_process_thread_messages", 0));
     JS_SetPropertyStr(ctx, proto, "set_process_thread_group_order", JS_NewCFunction(ctx, js_Node_set_process_thread_group_order, "set_process_thread_group_order", 1));
     JS_SetPropertyStr(ctx, proto, "get_process_thread_group_order", JS_NewCFunction(ctx, js_Node_get_process_thread_group_order, "get_process_thread_group_order", 0));
     JS_SetPropertyStr(ctx, proto, "set_display_folded", JS_NewCFunction(ctx, js_Node_set_display_folded, "set_display_folded", 1));
@@ -783,12 +1226,22 @@ static void quickjs_register_Node(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "is_processing_internal", JS_NewCFunction(ctx, js_Node_is_processing_internal, "is_processing_internal", 0));
     JS_SetPropertyStr(ctx, proto, "set_physics_process_internal", JS_NewCFunction(ctx, js_Node_set_physics_process_internal, "set_physics_process_internal", 1));
     JS_SetPropertyStr(ctx, proto, "is_physics_processing_internal", JS_NewCFunction(ctx, js_Node_is_physics_processing_internal, "is_physics_processing_internal", 0));
+    JS_SetPropertyStr(ctx, proto, "set_physics_interpolation_mode", JS_NewCFunction(ctx, js_Node_set_physics_interpolation_mode, "set_physics_interpolation_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_physics_interpolation_mode", JS_NewCFunction(ctx, js_Node_get_physics_interpolation_mode, "get_physics_interpolation_mode", 0));
     JS_SetPropertyStr(ctx, proto, "is_physics_interpolated", JS_NewCFunction(ctx, js_Node_is_physics_interpolated, "is_physics_interpolated", 0));
     JS_SetPropertyStr(ctx, proto, "is_physics_interpolated_and_enabled", JS_NewCFunction(ctx, js_Node_is_physics_interpolated_and_enabled, "is_physics_interpolated_and_enabled", 0));
     JS_SetPropertyStr(ctx, proto, "reset_physics_interpolation", JS_NewCFunction(ctx, js_Node_reset_physics_interpolation, "reset_physics_interpolation", 0));
+    JS_SetPropertyStr(ctx, proto, "set_auto_translate_mode", JS_NewCFunction(ctx, js_Node_set_auto_translate_mode, "set_auto_translate_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_auto_translate_mode", JS_NewCFunction(ctx, js_Node_get_auto_translate_mode, "get_auto_translate_mode", 0));
     JS_SetPropertyStr(ctx, proto, "set_translation_domain_inherited", JS_NewCFunction(ctx, js_Node_set_translation_domain_inherited, "set_translation_domain_inherited", 0));
+    JS_SetPropertyStr(ctx, proto, "get_tree", JS_NewCFunction(ctx, js_Node_get_tree, "get_tree", 0));
+    JS_SetPropertyStr(ctx, proto, "duplicate", JS_NewCFunction(ctx, js_Node_duplicate, "duplicate", 1));
+    JS_SetPropertyStr(ctx, proto, "replace_by", JS_NewCFunction(ctx, js_Node_replace_by, "replace_by", 2));
     JS_SetPropertyStr(ctx, proto, "set_scene_instance_load_placeholder", JS_NewCFunction(ctx, js_Node_set_scene_instance_load_placeholder, "set_scene_instance_load_placeholder", 1));
     JS_SetPropertyStr(ctx, proto, "get_scene_instance_load_placeholder", JS_NewCFunction(ctx, js_Node_get_scene_instance_load_placeholder, "get_scene_instance_load_placeholder", 0));
+    JS_SetPropertyStr(ctx, proto, "set_editable_instance", JS_NewCFunction(ctx, js_Node_set_editable_instance, "set_editable_instance", 2));
+    JS_SetPropertyStr(ctx, proto, "is_editable_instance", JS_NewCFunction(ctx, js_Node_is_editable_instance, "is_editable_instance", 1));
+    JS_SetPropertyStr(ctx, proto, "get_viewport", JS_NewCFunction(ctx, js_Node_get_viewport, "get_viewport", 0));
     JS_SetPropertyStr(ctx, proto, "queue_free", JS_NewCFunction(ctx, js_Node_queue_free, "queue_free", 0));
     JS_SetPropertyStr(ctx, proto, "request_ready", JS_NewCFunction(ctx, js_Node_request_ready, "request_ready", 0));
     JS_SetPropertyStr(ctx, proto, "is_node_ready", JS_NewCFunction(ctx, js_Node_is_node_ready, "is_node_ready", 0));
@@ -805,10 +1258,13 @@ static void quickjs_register_Node(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "notify_deferred_thread_group", JS_NewCFunction(ctx, js_Node_notify_deferred_thread_group, "notify_deferred_thread_group", 1));
     JS_SetPropertyStr(ctx, proto, "notify_thread_safe", JS_NewCFunction(ctx, js_Node_notify_thread_safe, "notify_thread_safe", 1));
     JS_SetPropertyStr(ctx, global, "_Node_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_Node_constructor, "Node", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "Node", ctor);
 }
 
 static JSValue js_Node2D_set_rotation(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -820,7 +1276,7 @@ static JSValue js_Node2D_set_rotation(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Node2D_set_rotation_degrees(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -832,7 +1288,7 @@ static JSValue js_Node2D_set_rotation_degrees(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Node2D_set_skew(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -844,7 +1300,7 @@ static JSValue js_Node2D_set_skew(JSContext *ctx, JSValueConst this_val, int arg
 }
 
 static JSValue js_Node2D_get_rotation(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -853,7 +1309,7 @@ static JSValue js_Node2D_get_rotation(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Node2D_get_rotation_degrees(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -862,7 +1318,7 @@ static JSValue js_Node2D_get_rotation_degrees(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Node2D_get_skew(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -871,7 +1327,7 @@ static JSValue js_Node2D_get_skew(JSContext *ctx, JSValueConst this_val, int arg
 }
 
 static JSValue js_Node2D_rotate(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -883,7 +1339,7 @@ static JSValue js_Node2D_rotate(JSContext *ctx, JSValueConst this_val, int argc,
 }
 
 static JSValue js_Node2D_move_local_x(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -896,7 +1352,7 @@ static JSValue js_Node2D_move_local_x(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Node2D_move_local_y(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -909,7 +1365,7 @@ static JSValue js_Node2D_move_local_y(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Node2D_set_global_rotation(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -921,7 +1377,7 @@ static JSValue js_Node2D_set_global_rotation(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Node2D_set_global_rotation_degrees(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -933,7 +1389,7 @@ static JSValue js_Node2D_set_global_rotation_degrees(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_Node2D_get_global_rotation(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -942,7 +1398,7 @@ static JSValue js_Node2D_get_global_rotation(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Node2D_get_global_rotation_degrees(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -951,7 +1407,7 @@ static JSValue js_Node2D_get_global_rotation_degrees(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_Node2D_set_global_skew(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -963,7 +1419,7 @@ static JSValue js_Node2D_set_global_skew(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_Node2D_get_global_skew(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -971,8 +1427,18 @@ static JSValue js_Node2D_get_global_skew(JSContext *ctx, JSValueConst this_val, 
     return JS_NewFloat64(ctx, (double)ret);
 }
 
-static void quickjs_register_Node2D(JSContext *ctx, JSValue global) {
+static JSValue js_Node2D_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("Node2D");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_Node2D(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_rotation", JS_NewCFunction(ctx, js_Node2D_set_rotation, "set_rotation", 1));
     JS_SetPropertyStr(ctx, proto, "set_rotation_degrees", JS_NewCFunction(ctx, js_Node2D_set_rotation_degrees, "set_rotation_degrees", 1));
     JS_SetPropertyStr(ctx, proto, "set_skew", JS_NewCFunction(ctx, js_Node2D_set_skew, "set_skew", 1));
@@ -989,10 +1455,65 @@ static void quickjs_register_Node2D(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "set_global_skew", JS_NewCFunction(ctx, js_Node2D_set_global_skew, "set_global_skew", 1));
     JS_SetPropertyStr(ctx, proto, "get_global_skew", JS_NewCFunction(ctx, js_Node2D_get_global_skew, "get_global_skew", 0));
     JS_SetPropertyStr(ctx, global, "_Node2D_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_Node2D_constructor, "Node2D", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "Node2D", ctor);
+}
+
+static JSValue js_Node3D_set_rotation_order(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_rotation_order", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Node3D_get_rotation_order(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_rotation_order", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Node3D_set_rotation_edit_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_rotation_edit_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Node3D_get_rotation_edit_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_rotation_edit_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Node3D_get_parent_node_3d(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_parent_node_3d", nullptr, 0, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
 }
 
 static JSValue js_Node3D_set_ignore_transform_notification(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1004,7 +1525,7 @@ static JSValue js_Node3D_set_ignore_transform_notification(JSContext *ctx, JSVal
 }
 
 static JSValue js_Node3D_set_as_top_level(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1016,7 +1537,7 @@ static JSValue js_Node3D_set_as_top_level(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_Node3D_is_set_as_top_level(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1025,7 +1546,7 @@ static JSValue js_Node3D_is_set_as_top_level(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Node3D_set_disable_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1037,7 +1558,7 @@ static JSValue js_Node3D_set_disable_scale(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_Node3D_is_scale_disabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1046,7 +1567,7 @@ static JSValue js_Node3D_is_scale_disabled(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_Node3D_force_update_transform(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1055,7 +1576,7 @@ static JSValue js_Node3D_force_update_transform(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_Node3D_set_visibility_parent(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = NodePath(js_to_string(ctx, argv[0]));
@@ -1067,7 +1588,7 @@ static JSValue js_Node3D_set_visibility_parent(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_Node3D_get_visibility_parent(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1076,7 +1597,7 @@ static JSValue js_Node3D_get_visibility_parent(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_Node3D_update_gizmos(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1085,7 +1606,7 @@ static JSValue js_Node3D_update_gizmos(JSContext *ctx, JSValueConst this_val, in
 }
 
 static JSValue js_Node3D_clear_gizmos(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1094,7 +1615,7 @@ static JSValue js_Node3D_clear_gizmos(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Node3D_clear_subgizmo_selection(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1103,7 +1624,7 @@ static JSValue js_Node3D_clear_subgizmo_selection(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_Node3D_set_visible(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1115,7 +1636,7 @@ static JSValue js_Node3D_set_visible(JSContext *ctx, JSValueConst this_val, int 
 }
 
 static JSValue js_Node3D_is_visible(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1124,7 +1645,7 @@ static JSValue js_Node3D_is_visible(JSContext *ctx, JSValueConst this_val, int a
 }
 
 static JSValue js_Node3D_is_visible_in_tree(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1133,7 +1654,7 @@ static JSValue js_Node3D_is_visible_in_tree(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_Node3D_show(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1142,7 +1663,7 @@ static JSValue js_Node3D_show(JSContext *ctx, JSValueConst this_val, int argc, J
 }
 
 static JSValue js_Node3D_hide(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1151,7 +1672,7 @@ static JSValue js_Node3D_hide(JSContext *ctx, JSValueConst this_val, int argc, J
 }
 
 static JSValue js_Node3D_set_notify_local_transform(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1163,7 +1684,7 @@ static JSValue js_Node3D_set_notify_local_transform(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_Node3D_is_local_transform_notification_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1172,7 +1693,7 @@ static JSValue js_Node3D_is_local_transform_notification_enabled(JSContext *ctx,
 }
 
 static JSValue js_Node3D_set_notify_transform(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1184,7 +1705,7 @@ static JSValue js_Node3D_set_notify_transform(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Node3D_is_transform_notification_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1193,7 +1714,7 @@ static JSValue js_Node3D_is_transform_notification_enabled(JSContext *ctx, JSVal
 }
 
 static JSValue js_Node3D_rotate_x(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -1205,7 +1726,7 @@ static JSValue js_Node3D_rotate_x(JSContext *ctx, JSValueConst this_val, int arg
 }
 
 static JSValue js_Node3D_rotate_y(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -1217,7 +1738,7 @@ static JSValue js_Node3D_rotate_y(JSContext *ctx, JSValueConst this_val, int arg
 }
 
 static JSValue js_Node3D_rotate_z(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -1229,7 +1750,7 @@ static JSValue js_Node3D_rotate_z(JSContext *ctx, JSValueConst this_val, int arg
 }
 
 static JSValue js_Node3D_orthonormalize(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1238,7 +1759,7 @@ static JSValue js_Node3D_orthonormalize(JSContext *ctx, JSValueConst this_val, i
 }
 
 static JSValue js_Node3D_set_identity(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1246,8 +1767,23 @@ static JSValue js_Node3D_set_identity(JSContext *ctx, JSValueConst this_val, int
     return JS_UNDEFINED;
 }
 
-static void quickjs_register_Node3D(JSContext *ctx, JSValue global) {
+static JSValue js_Node3D_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("Node3D");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_Node3D(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
+    JS_SetPropertyStr(ctx, proto, "set_rotation_order", JS_NewCFunction(ctx, js_Node3D_set_rotation_order, "set_rotation_order", 1));
+    JS_SetPropertyStr(ctx, proto, "get_rotation_order", JS_NewCFunction(ctx, js_Node3D_get_rotation_order, "get_rotation_order", 0));
+    JS_SetPropertyStr(ctx, proto, "set_rotation_edit_mode", JS_NewCFunction(ctx, js_Node3D_set_rotation_edit_mode, "set_rotation_edit_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_rotation_edit_mode", JS_NewCFunction(ctx, js_Node3D_get_rotation_edit_mode, "get_rotation_edit_mode", 0));
+    JS_SetPropertyStr(ctx, proto, "get_parent_node_3d", JS_NewCFunction(ctx, js_Node3D_get_parent_node_3d, "get_parent_node_3d", 0));
     JS_SetPropertyStr(ctx, proto, "set_ignore_transform_notification", JS_NewCFunction(ctx, js_Node3D_set_ignore_transform_notification, "set_ignore_transform_notification", 1));
     JS_SetPropertyStr(ctx, proto, "set_as_top_level", JS_NewCFunction(ctx, js_Node3D_set_as_top_level, "set_as_top_level", 1));
     JS_SetPropertyStr(ctx, proto, "is_set_as_top_level", JS_NewCFunction(ctx, js_Node3D_is_set_as_top_level, "is_set_as_top_level", 0));
@@ -1274,10 +1810,13 @@ static void quickjs_register_Node3D(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "orthonormalize", JS_NewCFunction(ctx, js_Node3D_orthonormalize, "orthonormalize", 0));
     JS_SetPropertyStr(ctx, proto, "set_identity", JS_NewCFunction(ctx, js_Node3D_set_identity, "set_identity", 0));
     JS_SetPropertyStr(ctx, global, "_Node3D_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_Node3D_constructor, "Node3D", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "Node3D", ctor);
 }
 
 static JSValue js_Camera3D_set_perspective(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -1291,7 +1830,7 @@ static JSValue js_Camera3D_set_perspective(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_Camera3D_set_orthogonal(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -1305,7 +1844,7 @@ static JSValue js_Camera3D_set_orthogonal(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_Camera3D_make_current(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1314,7 +1853,7 @@ static JSValue js_Camera3D_make_current(JSContext *ctx, JSValueConst this_val, i
 }
 
 static JSValue js_Camera3D_clear_current(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1326,7 +1865,7 @@ static JSValue js_Camera3D_clear_current(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_Camera3D_set_current(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1338,7 +1877,7 @@ static JSValue js_Camera3D_set_current(JSContext *ctx, JSValueConst this_val, in
 }
 
 static JSValue js_Camera3D_is_current(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1347,7 +1886,7 @@ static JSValue js_Camera3D_is_current(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Camera3D_get_fov(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1356,7 +1895,7 @@ static JSValue js_Camera3D_get_fov(JSContext *ctx, JSValueConst this_val, int ar
 }
 
 static JSValue js_Camera3D_get_size(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1365,7 +1904,7 @@ static JSValue js_Camera3D_get_size(JSContext *ctx, JSValueConst this_val, int a
 }
 
 static JSValue js_Camera3D_get_far(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1374,7 +1913,7 @@ static JSValue js_Camera3D_get_far(JSContext *ctx, JSValueConst this_val, int ar
 }
 
 static JSValue js_Camera3D_get_near(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1383,7 +1922,7 @@ static JSValue js_Camera3D_get_near(JSContext *ctx, JSValueConst this_val, int a
 }
 
 static JSValue js_Camera3D_set_fov(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -1395,7 +1934,7 @@ static JSValue js_Camera3D_set_fov(JSContext *ctx, JSValueConst this_val, int ar
 }
 
 static JSValue js_Camera3D_set_size(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -1407,7 +1946,7 @@ static JSValue js_Camera3D_set_size(JSContext *ctx, JSValueConst this_val, int a
 }
 
 static JSValue js_Camera3D_set_far(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -1419,7 +1958,7 @@ static JSValue js_Camera3D_set_far(JSContext *ctx, JSValueConst this_val, int ar
 }
 
 static JSValue js_Camera3D_set_near(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -1430,8 +1969,29 @@ static JSValue js_Camera3D_set_near(JSContext *ctx, JSValueConst this_val, int a
     return JS_UNDEFINED;
 }
 
+static JSValue js_Camera3D_get_projection(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_projection", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Camera3D_set_projection(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_projection", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
 static JSValue js_Camera3D_set_h_offset(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -1443,7 +2003,7 @@ static JSValue js_Camera3D_set_h_offset(JSContext *ctx, JSValueConst this_val, i
 }
 
 static JSValue js_Camera3D_get_h_offset(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1452,7 +2012,7 @@ static JSValue js_Camera3D_get_h_offset(JSContext *ctx, JSValueConst this_val, i
 }
 
 static JSValue js_Camera3D_set_v_offset(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -1464,7 +2024,7 @@ static JSValue js_Camera3D_set_v_offset(JSContext *ctx, JSValueConst this_val, i
 }
 
 static JSValue js_Camera3D_get_v_offset(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1473,7 +2033,7 @@ static JSValue js_Camera3D_get_v_offset(JSContext *ctx, JSValueConst this_val, i
 }
 
 static JSValue js_Camera3D_set_cull_mask(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -1485,7 +2045,7 @@ static JSValue js_Camera3D_set_cull_mask(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_Camera3D_get_cull_mask(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1493,8 +2053,50 @@ static JSValue js_Camera3D_get_cull_mask(JSContext *ctx, JSValueConst this_val, 
     return JS_NewInt64(ctx, (int64_t)ret);
 }
 
+static JSValue js_Camera3D_set_keep_aspect_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_keep_aspect_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Camera3D_get_keep_aspect_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_keep_aspect_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Camera3D_set_doppler_tracking(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_doppler_tracking", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Camera3D_get_doppler_tracking(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_doppler_tracking", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Camera3D_set_cull_mask_value(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -1507,7 +2109,7 @@ static JSValue js_Camera3D_set_cull_mask_value(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_Camera3D_get_cull_mask_value(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -1518,8 +2120,18 @@ static JSValue js_Camera3D_get_cull_mask_value(JSContext *ctx, JSValueConst this
     return JS_NewBool(ctx, (bool)ret);
 }
 
-static void quickjs_register_Camera3D(JSContext *ctx, JSValue global) {
+static JSValue js_Camera3D_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("Camera3D");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_Camera3D(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node3D_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_perspective", JS_NewCFunction(ctx, js_Camera3D_set_perspective, "set_perspective", 3));
     JS_SetPropertyStr(ctx, proto, "set_orthogonal", JS_NewCFunction(ctx, js_Camera3D_set_orthogonal, "set_orthogonal", 3));
     JS_SetPropertyStr(ctx, proto, "make_current", JS_NewCFunction(ctx, js_Camera3D_make_current, "make_current", 0));
@@ -1534,19 +2146,28 @@ static void quickjs_register_Camera3D(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "set_size", JS_NewCFunction(ctx, js_Camera3D_set_size, "set_size", 1));
     JS_SetPropertyStr(ctx, proto, "set_far", JS_NewCFunction(ctx, js_Camera3D_set_far, "set_far", 1));
     JS_SetPropertyStr(ctx, proto, "set_near", JS_NewCFunction(ctx, js_Camera3D_set_near, "set_near", 1));
+    JS_SetPropertyStr(ctx, proto, "get_projection", JS_NewCFunction(ctx, js_Camera3D_get_projection, "get_projection", 0));
+    JS_SetPropertyStr(ctx, proto, "set_projection", JS_NewCFunction(ctx, js_Camera3D_set_projection, "set_projection", 1));
     JS_SetPropertyStr(ctx, proto, "set_h_offset", JS_NewCFunction(ctx, js_Camera3D_set_h_offset, "set_h_offset", 1));
     JS_SetPropertyStr(ctx, proto, "get_h_offset", JS_NewCFunction(ctx, js_Camera3D_get_h_offset, "get_h_offset", 0));
     JS_SetPropertyStr(ctx, proto, "set_v_offset", JS_NewCFunction(ctx, js_Camera3D_set_v_offset, "set_v_offset", 1));
     JS_SetPropertyStr(ctx, proto, "get_v_offset", JS_NewCFunction(ctx, js_Camera3D_get_v_offset, "get_v_offset", 0));
     JS_SetPropertyStr(ctx, proto, "set_cull_mask", JS_NewCFunction(ctx, js_Camera3D_set_cull_mask, "set_cull_mask", 1));
     JS_SetPropertyStr(ctx, proto, "get_cull_mask", JS_NewCFunction(ctx, js_Camera3D_get_cull_mask, "get_cull_mask", 0));
+    JS_SetPropertyStr(ctx, proto, "set_keep_aspect_mode", JS_NewCFunction(ctx, js_Camera3D_set_keep_aspect_mode, "set_keep_aspect_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_keep_aspect_mode", JS_NewCFunction(ctx, js_Camera3D_get_keep_aspect_mode, "get_keep_aspect_mode", 0));
+    JS_SetPropertyStr(ctx, proto, "set_doppler_tracking", JS_NewCFunction(ctx, js_Camera3D_set_doppler_tracking, "set_doppler_tracking", 1));
+    JS_SetPropertyStr(ctx, proto, "get_doppler_tracking", JS_NewCFunction(ctx, js_Camera3D_get_doppler_tracking, "get_doppler_tracking", 0));
     JS_SetPropertyStr(ctx, proto, "set_cull_mask_value", JS_NewCFunction(ctx, js_Camera3D_set_cull_mask_value, "set_cull_mask_value", 2));
     JS_SetPropertyStr(ctx, proto, "get_cull_mask_value", JS_NewCFunction(ctx, js_Camera3D_get_cull_mask_value, "get_cull_mask_value", 1));
     JS_SetPropertyStr(ctx, global, "_Camera3D_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_Camera3D_constructor, "Camera3D", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "Camera3D", ctor);
 }
 
 static JSValue js_MeshInstance3D_set_skeleton_path(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = NodePath(js_to_string(ctx, argv[0]));
@@ -1558,7 +2179,7 @@ static JSValue js_MeshInstance3D_set_skeleton_path(JSContext *ctx, JSValueConst 
 }
 
 static JSValue js_MeshInstance3D_get_skeleton_path(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1567,7 +2188,7 @@ static JSValue js_MeshInstance3D_get_skeleton_path(JSContext *ctx, JSValueConst 
 }
 
 static JSValue js_MeshInstance3D_get_surface_override_material_count(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1576,7 +2197,7 @@ static JSValue js_MeshInstance3D_get_surface_override_material_count(JSContext *
 }
 
 static JSValue js_MeshInstance3D_create_trimesh_collision(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1585,7 +2206,7 @@ static JSValue js_MeshInstance3D_create_trimesh_collision(JSContext *ctx, JSValu
 }
 
 static JSValue js_MeshInstance3D_create_convex_collision(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1598,7 +2219,7 @@ static JSValue js_MeshInstance3D_create_convex_collision(JSContext *ctx, JSValue
 }
 
 static JSValue js_MeshInstance3D_get_blend_shape_count(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1607,7 +2228,7 @@ static JSValue js_MeshInstance3D_get_blend_shape_count(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_MeshInstance3D_find_blend_shape_by_name(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -1619,7 +2240,7 @@ static JSValue js_MeshInstance3D_find_blend_shape_by_name(JSContext *ctx, JSValu
 }
 
 static JSValue js_MeshInstance3D_get_blend_shape_value(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -1631,7 +2252,7 @@ static JSValue js_MeshInstance3D_get_blend_shape_value(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_MeshInstance3D_set_blend_shape_value(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -1644,7 +2265,7 @@ static JSValue js_MeshInstance3D_set_blend_shape_value(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_MeshInstance3D_create_debug_tangents(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1652,8 +2273,18 @@ static JSValue js_MeshInstance3D_create_debug_tangents(JSContext *ctx, JSValueCo
     return JS_UNDEFINED;
 }
 
-static void quickjs_register_MeshInstance3D(JSContext *ctx, JSValue global) {
+static JSValue js_MeshInstance3D_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("MeshInstance3D");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_MeshInstance3D(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node3D_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_skeleton_path", JS_NewCFunction(ctx, js_MeshInstance3D_set_skeleton_path, "set_skeleton_path", 1));
     JS_SetPropertyStr(ctx, proto, "get_skeleton_path", JS_NewCFunction(ctx, js_MeshInstance3D_get_skeleton_path, "get_skeleton_path", 0));
     JS_SetPropertyStr(ctx, proto, "get_surface_override_material_count", JS_NewCFunction(ctx, js_MeshInstance3D_get_surface_override_material_count, "get_surface_override_material_count", 0));
@@ -1665,10 +2296,34 @@ static void quickjs_register_MeshInstance3D(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "set_blend_shape_value", JS_NewCFunction(ctx, js_MeshInstance3D_set_blend_shape_value, "set_blend_shape_value", 2));
     JS_SetPropertyStr(ctx, proto, "create_debug_tangents", JS_NewCFunction(ctx, js_MeshInstance3D_create_debug_tangents, "create_debug_tangents", 0));
     JS_SetPropertyStr(ctx, global, "_MeshInstance3D_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_MeshInstance3D_constructor, "MeshInstance3D", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "MeshInstance3D", ctor);
+}
+
+static JSValue js_DirectionalLight3D_set_shadow_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_shadow_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_DirectionalLight3D_get_shadow_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_shadow_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
 }
 
 static JSValue js_DirectionalLight3D_set_blend_splits(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1680,7 +2335,7 @@ static JSValue js_DirectionalLight3D_set_blend_splits(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_DirectionalLight3D_is_blend_splits_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1688,30 +2343,130 @@ static JSValue js_DirectionalLight3D_is_blend_splits_enabled(JSContext *ctx, JSV
     return JS_NewBool(ctx, (bool)ret);
 }
 
-static void quickjs_register_DirectionalLight3D(JSContext *ctx, JSValue global) {
+static JSValue js_DirectionalLight3D_set_sky_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_sky_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_DirectionalLight3D_get_sky_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_sky_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_DirectionalLight3D_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("DirectionalLight3D");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_DirectionalLight3D(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node3D_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
+    JS_SetPropertyStr(ctx, proto, "set_shadow_mode", JS_NewCFunction(ctx, js_DirectionalLight3D_set_shadow_mode, "set_shadow_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_shadow_mode", JS_NewCFunction(ctx, js_DirectionalLight3D_get_shadow_mode, "get_shadow_mode", 0));
     JS_SetPropertyStr(ctx, proto, "set_blend_splits", JS_NewCFunction(ctx, js_DirectionalLight3D_set_blend_splits, "set_blend_splits", 1));
     JS_SetPropertyStr(ctx, proto, "is_blend_splits_enabled", JS_NewCFunction(ctx, js_DirectionalLight3D_is_blend_splits_enabled, "is_blend_splits_enabled", 0));
+    JS_SetPropertyStr(ctx, proto, "set_sky_mode", JS_NewCFunction(ctx, js_DirectionalLight3D_set_sky_mode, "set_sky_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_sky_mode", JS_NewCFunction(ctx, js_DirectionalLight3D_get_sky_mode, "get_sky_mode", 0));
     JS_SetPropertyStr(ctx, global, "_DirectionalLight3D_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_DirectionalLight3D_constructor, "DirectionalLight3D", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "DirectionalLight3D", ctor);
 }
 
-static void quickjs_register_OmniLight3D(JSContext *ctx, JSValue global) {
+static JSValue js_OmniLight3D_set_shadow_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_shadow_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_OmniLight3D_get_shadow_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_shadow_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_OmniLight3D_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("OmniLight3D");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_OmniLight3D(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node3D_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
+    JS_SetPropertyStr(ctx, proto, "set_shadow_mode", JS_NewCFunction(ctx, js_OmniLight3D_set_shadow_mode, "set_shadow_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_shadow_mode", JS_NewCFunction(ctx, js_OmniLight3D_get_shadow_mode, "get_shadow_mode", 0));
     JS_SetPropertyStr(ctx, global, "_OmniLight3D_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_OmniLight3D_constructor, "OmniLight3D", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "OmniLight3D", ctor);
 }
 
-static void quickjs_register_SpotLight3D(JSContext *ctx, JSValue global) {
+static JSValue js_SpotLight3D_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("SpotLight3D");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_SpotLight3D(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node3D_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, global, "_SpotLight3D_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_SpotLight3D_constructor, "SpotLight3D", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "SpotLight3D", ctor);
 }
 
-static void quickjs_register_WorldEnvironment(JSContext *ctx, JSValue global) {
+static JSValue js_WorldEnvironment_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("WorldEnvironment");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_WorldEnvironment(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, global, "_WorldEnvironment_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_WorldEnvironment_constructor, "WorldEnvironment", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "WorldEnvironment", ctor);
 }
 
 static JSValue js_RigidBody3D_set_mass(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -1723,7 +2478,7 @@ static JSValue js_RigidBody3D_set_mass(JSContext *ctx, JSValueConst this_val, in
 }
 
 static JSValue js_RigidBody3D_get_mass(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1731,8 +2486,29 @@ static JSValue js_RigidBody3D_get_mass(JSContext *ctx, JSValueConst this_val, in
     return JS_NewFloat64(ctx, (double)ret);
 }
 
+static JSValue js_RigidBody3D_set_center_of_mass_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_center_of_mass_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_RigidBody3D_get_center_of_mass_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_center_of_mass_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_RigidBody3D_set_gravity_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -1744,7 +2520,7 @@ static JSValue js_RigidBody3D_set_gravity_scale(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_RigidBody3D_get_gravity_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1752,8 +2528,50 @@ static JSValue js_RigidBody3D_get_gravity_scale(JSContext *ctx, JSValueConst thi
     return JS_NewFloat64(ctx, (double)ret);
 }
 
+static JSValue js_RigidBody3D_set_linear_damp_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_linear_damp_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_RigidBody3D_get_linear_damp_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_linear_damp_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_RigidBody3D_set_angular_damp_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_angular_damp_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_RigidBody3D_get_angular_damp_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_angular_damp_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_RigidBody3D_set_linear_damp(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -1765,7 +2583,7 @@ static JSValue js_RigidBody3D_set_linear_damp(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_RigidBody3D_get_linear_damp(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1774,7 +2592,7 @@ static JSValue js_RigidBody3D_get_linear_damp(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_RigidBody3D_set_angular_damp(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -1786,7 +2604,7 @@ static JSValue js_RigidBody3D_set_angular_damp(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_RigidBody3D_get_angular_damp(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1795,7 +2613,7 @@ static JSValue js_RigidBody3D_get_angular_damp(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_RigidBody3D_set_max_contacts_reported(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -1807,7 +2625,7 @@ static JSValue js_RigidBody3D_set_max_contacts_reported(JSContext *ctx, JSValueC
 }
 
 static JSValue js_RigidBody3D_get_max_contacts_reported(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1816,7 +2634,7 @@ static JSValue js_RigidBody3D_get_max_contacts_reported(JSContext *ctx, JSValueC
 }
 
 static JSValue js_RigidBody3D_get_contact_count(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1825,7 +2643,7 @@ static JSValue js_RigidBody3D_get_contact_count(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_RigidBody3D_set_use_custom_integrator(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1837,7 +2655,7 @@ static JSValue js_RigidBody3D_set_use_custom_integrator(JSContext *ctx, JSValueC
 }
 
 static JSValue js_RigidBody3D_is_using_custom_integrator(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1846,7 +2664,7 @@ static JSValue js_RigidBody3D_is_using_custom_integrator(JSContext *ctx, JSValue
 }
 
 static JSValue js_RigidBody3D_set_contact_monitor(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1858,7 +2676,7 @@ static JSValue js_RigidBody3D_set_contact_monitor(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_RigidBody3D_is_contact_monitor_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1867,7 +2685,7 @@ static JSValue js_RigidBody3D_is_contact_monitor_enabled(JSContext *ctx, JSValue
 }
 
 static JSValue js_RigidBody3D_set_use_continuous_collision_detection(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1879,7 +2697,7 @@ static JSValue js_RigidBody3D_set_use_continuous_collision_detection(JSContext *
 }
 
 static JSValue js_RigidBody3D_is_using_continuous_collision_detection(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1888,7 +2706,7 @@ static JSValue js_RigidBody3D_is_using_continuous_collision_detection(JSContext 
 }
 
 static JSValue js_RigidBody3D_set_sleeping(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1900,7 +2718,7 @@ static JSValue js_RigidBody3D_set_sleeping(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_RigidBody3D_is_sleeping(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1909,7 +2727,7 @@ static JSValue js_RigidBody3D_is_sleeping(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_RigidBody3D_set_can_sleep(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1921,7 +2739,7 @@ static JSValue js_RigidBody3D_set_can_sleep(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_RigidBody3D_is_able_to_sleep(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1930,7 +2748,7 @@ static JSValue js_RigidBody3D_is_able_to_sleep(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_RigidBody3D_set_lock_rotation_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1942,7 +2760,7 @@ static JSValue js_RigidBody3D_set_lock_rotation_enabled(JSContext *ctx, JSValueC
 }
 
 static JSValue js_RigidBody3D_is_lock_rotation_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1951,7 +2769,7 @@ static JSValue js_RigidBody3D_is_lock_rotation_enabled(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_RigidBody3D_set_freeze_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -1963,7 +2781,7 @@ static JSValue js_RigidBody3D_set_freeze_enabled(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_RigidBody3D_is_freeze_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -1971,12 +2789,49 @@ static JSValue js_RigidBody3D_is_freeze_enabled(JSContext *ctx, JSValueConst thi
     return JS_NewBool(ctx, (bool)ret);
 }
 
-static void quickjs_register_RigidBody3D(JSContext *ctx, JSValue global) {
+static JSValue js_RigidBody3D_set_freeze_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_freeze_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_RigidBody3D_get_freeze_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_freeze_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_RigidBody3D_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("RigidBody3D");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_RigidBody3D(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node3D_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_mass", JS_NewCFunction(ctx, js_RigidBody3D_set_mass, "set_mass", 1));
     JS_SetPropertyStr(ctx, proto, "get_mass", JS_NewCFunction(ctx, js_RigidBody3D_get_mass, "get_mass", 0));
+    JS_SetPropertyStr(ctx, proto, "set_center_of_mass_mode", JS_NewCFunction(ctx, js_RigidBody3D_set_center_of_mass_mode, "set_center_of_mass_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_center_of_mass_mode", JS_NewCFunction(ctx, js_RigidBody3D_get_center_of_mass_mode, "get_center_of_mass_mode", 0));
     JS_SetPropertyStr(ctx, proto, "set_gravity_scale", JS_NewCFunction(ctx, js_RigidBody3D_set_gravity_scale, "set_gravity_scale", 1));
     JS_SetPropertyStr(ctx, proto, "get_gravity_scale", JS_NewCFunction(ctx, js_RigidBody3D_get_gravity_scale, "get_gravity_scale", 0));
+    JS_SetPropertyStr(ctx, proto, "set_linear_damp_mode", JS_NewCFunction(ctx, js_RigidBody3D_set_linear_damp_mode, "set_linear_damp_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_linear_damp_mode", JS_NewCFunction(ctx, js_RigidBody3D_get_linear_damp_mode, "get_linear_damp_mode", 0));
+    JS_SetPropertyStr(ctx, proto, "set_angular_damp_mode", JS_NewCFunction(ctx, js_RigidBody3D_set_angular_damp_mode, "set_angular_damp_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_angular_damp_mode", JS_NewCFunction(ctx, js_RigidBody3D_get_angular_damp_mode, "get_angular_damp_mode", 0));
     JS_SetPropertyStr(ctx, proto, "set_linear_damp", JS_NewCFunction(ctx, js_RigidBody3D_set_linear_damp, "set_linear_damp", 1));
     JS_SetPropertyStr(ctx, proto, "get_linear_damp", JS_NewCFunction(ctx, js_RigidBody3D_get_linear_damp, "get_linear_damp", 0));
     JS_SetPropertyStr(ctx, proto, "set_angular_damp", JS_NewCFunction(ctx, js_RigidBody3D_set_angular_damp, "set_angular_damp", 1));
@@ -1998,16 +2853,34 @@ static void quickjs_register_RigidBody3D(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "is_lock_rotation_enabled", JS_NewCFunction(ctx, js_RigidBody3D_is_lock_rotation_enabled, "is_lock_rotation_enabled", 0));
     JS_SetPropertyStr(ctx, proto, "set_freeze_enabled", JS_NewCFunction(ctx, js_RigidBody3D_set_freeze_enabled, "set_freeze_enabled", 1));
     JS_SetPropertyStr(ctx, proto, "is_freeze_enabled", JS_NewCFunction(ctx, js_RigidBody3D_is_freeze_enabled, "is_freeze_enabled", 0));
+    JS_SetPropertyStr(ctx, proto, "set_freeze_mode", JS_NewCFunction(ctx, js_RigidBody3D_set_freeze_mode, "set_freeze_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_freeze_mode", JS_NewCFunction(ctx, js_RigidBody3D_get_freeze_mode, "get_freeze_mode", 0));
     JS_SetPropertyStr(ctx, global, "_RigidBody3D_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_RigidBody3D_constructor, "RigidBody3D", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "RigidBody3D", ctor);
 }
 
-static void quickjs_register_StaticBody3D(JSContext *ctx, JSValue global) {
+static JSValue js_StaticBody3D_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("StaticBody3D");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_StaticBody3D(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node3D_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, global, "_StaticBody3D_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_StaticBody3D_constructor, "StaticBody3D", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "StaticBody3D", ctor);
 }
 
 static JSValue js_CharacterBody3D_move_and_slide(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2016,7 +2889,7 @@ static JSValue js_CharacterBody3D_move_and_slide(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_CharacterBody3D_apply_floor_snap(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2025,7 +2898,7 @@ static JSValue js_CharacterBody3D_apply_floor_snap(JSContext *ctx, JSValueConst 
 }
 
 static JSValue js_CharacterBody3D_set_safe_margin(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -2037,7 +2910,7 @@ static JSValue js_CharacterBody3D_set_safe_margin(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_CharacterBody3D_get_safe_margin(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2046,7 +2919,7 @@ static JSValue js_CharacterBody3D_get_safe_margin(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_CharacterBody3D_is_floor_stop_on_slope_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2055,7 +2928,7 @@ static JSValue js_CharacterBody3D_is_floor_stop_on_slope_enabled(JSContext *ctx,
 }
 
 static JSValue js_CharacterBody3D_set_floor_stop_on_slope_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -2067,7 +2940,7 @@ static JSValue js_CharacterBody3D_set_floor_stop_on_slope_enabled(JSContext *ctx
 }
 
 static JSValue js_CharacterBody3D_set_floor_constant_speed_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -2079,7 +2952,7 @@ static JSValue js_CharacterBody3D_set_floor_constant_speed_enabled(JSContext *ct
 }
 
 static JSValue js_CharacterBody3D_is_floor_constant_speed_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2088,7 +2961,7 @@ static JSValue js_CharacterBody3D_is_floor_constant_speed_enabled(JSContext *ctx
 }
 
 static JSValue js_CharacterBody3D_set_floor_block_on_wall_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -2100,7 +2973,7 @@ static JSValue js_CharacterBody3D_set_floor_block_on_wall_enabled(JSContext *ctx
 }
 
 static JSValue js_CharacterBody3D_is_floor_block_on_wall_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2109,7 +2982,7 @@ static JSValue js_CharacterBody3D_is_floor_block_on_wall_enabled(JSContext *ctx,
 }
 
 static JSValue js_CharacterBody3D_set_slide_on_ceiling_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -2121,7 +2994,7 @@ static JSValue js_CharacterBody3D_set_slide_on_ceiling_enabled(JSContext *ctx, J
 }
 
 static JSValue js_CharacterBody3D_is_slide_on_ceiling_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2130,7 +3003,7 @@ static JSValue js_CharacterBody3D_is_slide_on_ceiling_enabled(JSContext *ctx, JS
 }
 
 static JSValue js_CharacterBody3D_set_platform_floor_layers(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -2142,7 +3015,7 @@ static JSValue js_CharacterBody3D_set_platform_floor_layers(JSContext *ctx, JSVa
 }
 
 static JSValue js_CharacterBody3D_get_platform_floor_layers(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2151,7 +3024,7 @@ static JSValue js_CharacterBody3D_get_platform_floor_layers(JSContext *ctx, JSVa
 }
 
 static JSValue js_CharacterBody3D_set_platform_wall_layers(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -2163,7 +3036,7 @@ static JSValue js_CharacterBody3D_set_platform_wall_layers(JSContext *ctx, JSVal
 }
 
 static JSValue js_CharacterBody3D_get_platform_wall_layers(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2172,7 +3045,7 @@ static JSValue js_CharacterBody3D_get_platform_wall_layers(JSContext *ctx, JSVal
 }
 
 static JSValue js_CharacterBody3D_get_max_slides(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2181,7 +3054,7 @@ static JSValue js_CharacterBody3D_get_max_slides(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_CharacterBody3D_set_max_slides(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -2193,7 +3066,7 @@ static JSValue js_CharacterBody3D_set_max_slides(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_CharacterBody3D_get_floor_max_angle(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2202,7 +3075,7 @@ static JSValue js_CharacterBody3D_get_floor_max_angle(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_CharacterBody3D_set_floor_max_angle(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -2214,7 +3087,7 @@ static JSValue js_CharacterBody3D_set_floor_max_angle(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_CharacterBody3D_get_floor_snap_length(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2223,7 +3096,7 @@ static JSValue js_CharacterBody3D_get_floor_snap_length(JSContext *ctx, JSValueC
 }
 
 static JSValue js_CharacterBody3D_set_floor_snap_length(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -2235,7 +3108,7 @@ static JSValue js_CharacterBody3D_set_floor_snap_length(JSContext *ctx, JSValueC
 }
 
 static JSValue js_CharacterBody3D_get_wall_min_slide_angle(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2244,7 +3117,7 @@ static JSValue js_CharacterBody3D_get_wall_min_slide_angle(JSContext *ctx, JSVal
 }
 
 static JSValue js_CharacterBody3D_set_wall_min_slide_angle(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -2255,8 +3128,50 @@ static JSValue js_CharacterBody3D_set_wall_min_slide_angle(JSContext *ctx, JSVal
     return JS_UNDEFINED;
 }
 
+static JSValue js_CharacterBody3D_set_motion_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_motion_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_CharacterBody3D_get_motion_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_motion_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_CharacterBody3D_set_platform_on_leave(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_platform_on_leave", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_CharacterBody3D_get_platform_on_leave(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_platform_on_leave", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_CharacterBody3D_is_on_floor(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2265,7 +3180,7 @@ static JSValue js_CharacterBody3D_is_on_floor(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_CharacterBody3D_is_on_floor_only(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2274,7 +3189,7 @@ static JSValue js_CharacterBody3D_is_on_floor_only(JSContext *ctx, JSValueConst 
 }
 
 static JSValue js_CharacterBody3D_is_on_ceiling(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2283,7 +3198,7 @@ static JSValue js_CharacterBody3D_is_on_ceiling(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_CharacterBody3D_is_on_ceiling_only(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2292,7 +3207,7 @@ static JSValue js_CharacterBody3D_is_on_ceiling_only(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_CharacterBody3D_is_on_wall(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2301,7 +3216,7 @@ static JSValue js_CharacterBody3D_is_on_wall(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_CharacterBody3D_is_on_wall_only(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2310,7 +3225,7 @@ static JSValue js_CharacterBody3D_is_on_wall_only(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_CharacterBody3D_get_slide_collision_count(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2318,8 +3233,18 @@ static JSValue js_CharacterBody3D_get_slide_collision_count(JSContext *ctx, JSVa
     return JS_NewInt64(ctx, (int64_t)ret);
 }
 
-static void quickjs_register_CharacterBody3D(JSContext *ctx, JSValue global) {
+static JSValue js_CharacterBody3D_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("CharacterBody3D");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_CharacterBody3D(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node3D_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "move_and_slide", JS_NewCFunction(ctx, js_CharacterBody3D_move_and_slide, "move_and_slide", 0));
     JS_SetPropertyStr(ctx, proto, "apply_floor_snap", JS_NewCFunction(ctx, js_CharacterBody3D_apply_floor_snap, "apply_floor_snap", 0));
     JS_SetPropertyStr(ctx, proto, "set_safe_margin", JS_NewCFunction(ctx, js_CharacterBody3D_set_safe_margin, "set_safe_margin", 1));
@@ -2344,6 +3269,10 @@ static void quickjs_register_CharacterBody3D(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "set_floor_snap_length", JS_NewCFunction(ctx, js_CharacterBody3D_set_floor_snap_length, "set_floor_snap_length", 1));
     JS_SetPropertyStr(ctx, proto, "get_wall_min_slide_angle", JS_NewCFunction(ctx, js_CharacterBody3D_get_wall_min_slide_angle, "get_wall_min_slide_angle", 0));
     JS_SetPropertyStr(ctx, proto, "set_wall_min_slide_angle", JS_NewCFunction(ctx, js_CharacterBody3D_set_wall_min_slide_angle, "set_wall_min_slide_angle", 1));
+    JS_SetPropertyStr(ctx, proto, "set_motion_mode", JS_NewCFunction(ctx, js_CharacterBody3D_set_motion_mode, "set_motion_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_motion_mode", JS_NewCFunction(ctx, js_CharacterBody3D_get_motion_mode, "get_motion_mode", 0));
+    JS_SetPropertyStr(ctx, proto, "set_platform_on_leave", JS_NewCFunction(ctx, js_CharacterBody3D_set_platform_on_leave, "set_platform_on_leave", 1));
+    JS_SetPropertyStr(ctx, proto, "get_platform_on_leave", JS_NewCFunction(ctx, js_CharacterBody3D_get_platform_on_leave, "get_platform_on_leave", 0));
     JS_SetPropertyStr(ctx, proto, "is_on_floor", JS_NewCFunction(ctx, js_CharacterBody3D_is_on_floor, "is_on_floor", 0));
     JS_SetPropertyStr(ctx, proto, "is_on_floor_only", JS_NewCFunction(ctx, js_CharacterBody3D_is_on_floor_only, "is_on_floor_only", 0));
     JS_SetPropertyStr(ctx, proto, "is_on_ceiling", JS_NewCFunction(ctx, js_CharacterBody3D_is_on_ceiling, "is_on_ceiling", 0));
@@ -2352,10 +3281,13 @@ static void quickjs_register_CharacterBody3D(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "is_on_wall_only", JS_NewCFunction(ctx, js_CharacterBody3D_is_on_wall_only, "is_on_wall_only", 0));
     JS_SetPropertyStr(ctx, proto, "get_slide_collision_count", JS_NewCFunction(ctx, js_CharacterBody3D_get_slide_collision_count, "get_slide_collision_count", 0));
     JS_SetPropertyStr(ctx, global, "_CharacterBody3D_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_CharacterBody3D_constructor, "CharacterBody3D", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "CharacterBody3D", ctor);
 }
 
 static JSValue js_CollisionShape3D_set_disabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -2367,7 +3299,7 @@ static JSValue js_CollisionShape3D_set_disabled(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_CollisionShape3D_is_disabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2376,7 +3308,7 @@ static JSValue js_CollisionShape3D_is_disabled(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_CollisionShape3D_make_convex_from_siblings(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2385,7 +3317,7 @@ static JSValue js_CollisionShape3D_make_convex_from_siblings(JSContext *ctx, JSV
 }
 
 static JSValue js_CollisionShape3D_set_enable_debug_fill(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -2397,7 +3329,7 @@ static JSValue js_CollisionShape3D_set_enable_debug_fill(JSContext *ctx, JSValue
 }
 
 static JSValue js_CollisionShape3D_get_enable_debug_fill(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2405,18 +3337,52 @@ static JSValue js_CollisionShape3D_get_enable_debug_fill(JSContext *ctx, JSValue
     return JS_NewBool(ctx, (bool)ret);
 }
 
-static void quickjs_register_CollisionShape3D(JSContext *ctx, JSValue global) {
+static JSValue js_CollisionShape3D_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("CollisionShape3D");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_CollisionShape3D(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node3D_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_disabled", JS_NewCFunction(ctx, js_CollisionShape3D_set_disabled, "set_disabled", 1));
     JS_SetPropertyStr(ctx, proto, "is_disabled", JS_NewCFunction(ctx, js_CollisionShape3D_is_disabled, "is_disabled", 0));
     JS_SetPropertyStr(ctx, proto, "make_convex_from_siblings", JS_NewCFunction(ctx, js_CollisionShape3D_make_convex_from_siblings, "make_convex_from_siblings", 0));
     JS_SetPropertyStr(ctx, proto, "set_enable_debug_fill", JS_NewCFunction(ctx, js_CollisionShape3D_set_enable_debug_fill, "set_enable_debug_fill", 1));
     JS_SetPropertyStr(ctx, proto, "get_enable_debug_fill", JS_NewCFunction(ctx, js_CollisionShape3D_get_enable_debug_fill, "get_enable_debug_fill", 0));
     JS_SetPropertyStr(ctx, global, "_CollisionShape3D_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_CollisionShape3D_constructor, "CollisionShape3D", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "CollisionShape3D", ctor);
+}
+
+static JSValue js_Area3D_set_gravity_space_override_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_gravity_space_override_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Area3D_get_gravity_space_override_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_gravity_space_override_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
 }
 
 static JSValue js_Area3D_set_gravity_is_point(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -2428,7 +3394,7 @@ static JSValue js_Area3D_set_gravity_is_point(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Area3D_is_gravity_a_point(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2437,7 +3403,7 @@ static JSValue js_Area3D_is_gravity_a_point(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_Area3D_set_gravity_point_unit_distance(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -2449,7 +3415,7 @@ static JSValue js_Area3D_set_gravity_point_unit_distance(JSContext *ctx, JSValue
 }
 
 static JSValue js_Area3D_get_gravity_point_unit_distance(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2458,7 +3424,7 @@ static JSValue js_Area3D_get_gravity_point_unit_distance(JSContext *ctx, JSValue
 }
 
 static JSValue js_Area3D_set_gravity(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -2470,7 +3436,7 @@ static JSValue js_Area3D_set_gravity(JSContext *ctx, JSValueConst this_val, int 
 }
 
 static JSValue js_Area3D_get_gravity(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2478,8 +3444,50 @@ static JSValue js_Area3D_get_gravity(JSContext *ctx, JSValueConst this_val, int 
     return JS_NewFloat64(ctx, (double)ret);
 }
 
+static JSValue js_Area3D_set_linear_damp_space_override_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_linear_damp_space_override_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Area3D_get_linear_damp_space_override_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_linear_damp_space_override_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Area3D_set_angular_damp_space_override_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_angular_damp_space_override_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Area3D_get_angular_damp_space_override_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_angular_damp_space_override_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Area3D_set_angular_damp(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -2491,7 +3499,7 @@ static JSValue js_Area3D_set_angular_damp(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_Area3D_get_angular_damp(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2500,7 +3508,7 @@ static JSValue js_Area3D_get_angular_damp(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_Area3D_set_linear_damp(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -2512,7 +3520,7 @@ static JSValue js_Area3D_set_linear_damp(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_Area3D_get_linear_damp(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2521,7 +3529,7 @@ static JSValue js_Area3D_get_linear_damp(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_Area3D_set_priority(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -2533,7 +3541,7 @@ static JSValue js_Area3D_set_priority(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Area3D_get_priority(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2542,7 +3550,7 @@ static JSValue js_Area3D_get_priority(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Area3D_set_wind_force_magnitude(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -2554,7 +3562,7 @@ static JSValue js_Area3D_set_wind_force_magnitude(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_Area3D_get_wind_force_magnitude(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2563,7 +3571,7 @@ static JSValue js_Area3D_get_wind_force_magnitude(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_Area3D_set_wind_attenuation_factor(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -2575,7 +3583,7 @@ static JSValue js_Area3D_set_wind_attenuation_factor(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_Area3D_get_wind_attenuation_factor(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2584,7 +3592,7 @@ static JSValue js_Area3D_get_wind_attenuation_factor(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_Area3D_set_wind_source_path(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = NodePath(js_to_string(ctx, argv[0]));
@@ -2596,7 +3604,7 @@ static JSValue js_Area3D_set_wind_source_path(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Area3D_get_wind_source_path(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2605,7 +3613,7 @@ static JSValue js_Area3D_get_wind_source_path(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Area3D_set_monitorable(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -2617,7 +3625,7 @@ static JSValue js_Area3D_set_monitorable(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_Area3D_is_monitorable(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2626,7 +3634,7 @@ static JSValue js_Area3D_is_monitorable(JSContext *ctx, JSValueConst this_val, i
 }
 
 static JSValue js_Area3D_set_monitoring(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -2638,7 +3646,7 @@ static JSValue js_Area3D_set_monitoring(JSContext *ctx, JSValueConst this_val, i
 }
 
 static JSValue js_Area3D_is_monitoring(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2647,7 +3655,7 @@ static JSValue js_Area3D_is_monitoring(JSContext *ctx, JSValueConst this_val, in
 }
 
 static JSValue js_Area3D_has_overlapping_bodies(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2656,7 +3664,7 @@ static JSValue js_Area3D_has_overlapping_bodies(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_Area3D_has_overlapping_areas(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2664,8 +3672,32 @@ static JSValue js_Area3D_has_overlapping_areas(JSContext *ctx, JSValueConst this
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Area3D_overlaps_body(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    Variant ret = obj->callp("overlaps_body", argptrs, 1, ce);
+    return JS_NewBool(ctx, (bool)ret);
+}
+
+static JSValue js_Area3D_overlaps_area(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    Variant ret = obj->callp("overlaps_area", argptrs, 1, ce);
+    return JS_NewBool(ctx, (bool)ret);
+}
+
 static JSValue js_Area3D_set_audio_bus_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -2677,7 +3709,7 @@ static JSValue js_Area3D_set_audio_bus_override(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_Area3D_is_overriding_audio_bus(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2686,7 +3718,7 @@ static JSValue js_Area3D_is_overriding_audio_bus(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_Area3D_set_audio_bus_name(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -2698,7 +3730,7 @@ static JSValue js_Area3D_set_audio_bus_name(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_Area3D_get_audio_bus_name(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2707,7 +3739,7 @@ static JSValue js_Area3D_get_audio_bus_name(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_Area3D_set_use_reverb_bus(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -2719,7 +3751,7 @@ static JSValue js_Area3D_set_use_reverb_bus(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_Area3D_is_using_reverb_bus(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2728,7 +3760,7 @@ static JSValue js_Area3D_is_using_reverb_bus(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Area3D_set_reverb_bus_name(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -2740,7 +3772,7 @@ static JSValue js_Area3D_set_reverb_bus_name(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Area3D_get_reverb_bus_name(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2749,7 +3781,7 @@ static JSValue js_Area3D_get_reverb_bus_name(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Area3D_set_reverb_amount(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -2761,7 +3793,7 @@ static JSValue js_Area3D_set_reverb_amount(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_Area3D_get_reverb_amount(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2770,7 +3802,7 @@ static JSValue js_Area3D_get_reverb_amount(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_Area3D_set_reverb_uniformity(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -2782,7 +3814,7 @@ static JSValue js_Area3D_set_reverb_uniformity(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_Area3D_get_reverb_uniformity(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2790,14 +3822,30 @@ static JSValue js_Area3D_get_reverb_uniformity(JSContext *ctx, JSValueConst this
     return JS_NewFloat64(ctx, (double)ret);
 }
 
-static void quickjs_register_Area3D(JSContext *ctx, JSValue global) {
+static JSValue js_Area3D_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("Area3D");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_Area3D(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node3D_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
+    JS_SetPropertyStr(ctx, proto, "set_gravity_space_override_mode", JS_NewCFunction(ctx, js_Area3D_set_gravity_space_override_mode, "set_gravity_space_override_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_gravity_space_override_mode", JS_NewCFunction(ctx, js_Area3D_get_gravity_space_override_mode, "get_gravity_space_override_mode", 0));
     JS_SetPropertyStr(ctx, proto, "set_gravity_is_point", JS_NewCFunction(ctx, js_Area3D_set_gravity_is_point, "set_gravity_is_point", 1));
     JS_SetPropertyStr(ctx, proto, "is_gravity_a_point", JS_NewCFunction(ctx, js_Area3D_is_gravity_a_point, "is_gravity_a_point", 0));
     JS_SetPropertyStr(ctx, proto, "set_gravity_point_unit_distance", JS_NewCFunction(ctx, js_Area3D_set_gravity_point_unit_distance, "set_gravity_point_unit_distance", 1));
     JS_SetPropertyStr(ctx, proto, "get_gravity_point_unit_distance", JS_NewCFunction(ctx, js_Area3D_get_gravity_point_unit_distance, "get_gravity_point_unit_distance", 0));
     JS_SetPropertyStr(ctx, proto, "set_gravity", JS_NewCFunction(ctx, js_Area3D_set_gravity, "set_gravity", 1));
     JS_SetPropertyStr(ctx, proto, "get_gravity", JS_NewCFunction(ctx, js_Area3D_get_gravity, "get_gravity", 0));
+    JS_SetPropertyStr(ctx, proto, "set_linear_damp_space_override_mode", JS_NewCFunction(ctx, js_Area3D_set_linear_damp_space_override_mode, "set_linear_damp_space_override_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_linear_damp_space_override_mode", JS_NewCFunction(ctx, js_Area3D_get_linear_damp_space_override_mode, "get_linear_damp_space_override_mode", 0));
+    JS_SetPropertyStr(ctx, proto, "set_angular_damp_space_override_mode", JS_NewCFunction(ctx, js_Area3D_set_angular_damp_space_override_mode, "set_angular_damp_space_override_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_angular_damp_space_override_mode", JS_NewCFunction(ctx, js_Area3D_get_angular_damp_space_override_mode, "get_angular_damp_space_override_mode", 0));
     JS_SetPropertyStr(ctx, proto, "set_angular_damp", JS_NewCFunction(ctx, js_Area3D_set_angular_damp, "set_angular_damp", 1));
     JS_SetPropertyStr(ctx, proto, "get_angular_damp", JS_NewCFunction(ctx, js_Area3D_get_angular_damp, "get_angular_damp", 0));
     JS_SetPropertyStr(ctx, proto, "set_linear_damp", JS_NewCFunction(ctx, js_Area3D_set_linear_damp, "set_linear_damp", 1));
@@ -2816,6 +3864,8 @@ static void quickjs_register_Area3D(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "is_monitoring", JS_NewCFunction(ctx, js_Area3D_is_monitoring, "is_monitoring", 0));
     JS_SetPropertyStr(ctx, proto, "has_overlapping_bodies", JS_NewCFunction(ctx, js_Area3D_has_overlapping_bodies, "has_overlapping_bodies", 0));
     JS_SetPropertyStr(ctx, proto, "has_overlapping_areas", JS_NewCFunction(ctx, js_Area3D_has_overlapping_areas, "has_overlapping_areas", 0));
+    JS_SetPropertyStr(ctx, proto, "overlaps_body", JS_NewCFunction(ctx, js_Area3D_overlaps_body, "overlaps_body", 1));
+    JS_SetPropertyStr(ctx, proto, "overlaps_area", JS_NewCFunction(ctx, js_Area3D_overlaps_area, "overlaps_area", 1));
     JS_SetPropertyStr(ctx, proto, "set_audio_bus_override", JS_NewCFunction(ctx, js_Area3D_set_audio_bus_override, "set_audio_bus_override", 1));
     JS_SetPropertyStr(ctx, proto, "is_overriding_audio_bus", JS_NewCFunction(ctx, js_Area3D_is_overriding_audio_bus, "is_overriding_audio_bus", 0));
     JS_SetPropertyStr(ctx, proto, "set_audio_bus_name", JS_NewCFunction(ctx, js_Area3D_set_audio_bus_name, "set_audio_bus_name", 1));
@@ -2829,10 +3879,13 @@ static void quickjs_register_Area3D(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "set_reverb_uniformity", JS_NewCFunction(ctx, js_Area3D_set_reverb_uniformity, "set_reverb_uniformity", 1));
     JS_SetPropertyStr(ctx, proto, "get_reverb_uniformity", JS_NewCFunction(ctx, js_Area3D_get_reverb_uniformity, "get_reverb_uniformity", 0));
     JS_SetPropertyStr(ctx, global, "_Area3D_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_Area3D_constructor, "Area3D", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "Area3D", ctor);
 }
 
 static JSValue js_AnimationPlayer_animation_set_next(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -2845,7 +3898,7 @@ static JSValue js_AnimationPlayer_animation_set_next(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_AnimationPlayer_animation_get_next(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -2857,7 +3910,7 @@ static JSValue js_AnimationPlayer_animation_get_next(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_AnimationPlayer_set_blend_time(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -2871,7 +3924,7 @@ static JSValue js_AnimationPlayer_set_blend_time(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_AnimationPlayer_get_blend_time(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -2884,7 +3937,7 @@ static JSValue js_AnimationPlayer_get_blend_time(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_AnimationPlayer_set_default_blend_time(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -2896,7 +3949,7 @@ static JSValue js_AnimationPlayer_set_default_blend_time(JSContext *ctx, JSValue
 }
 
 static JSValue js_AnimationPlayer_get_default_blend_time(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2905,7 +3958,7 @@ static JSValue js_AnimationPlayer_get_default_blend_time(JSContext *ctx, JSValue
 }
 
 static JSValue js_AnimationPlayer_set_auto_capture(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -2917,7 +3970,7 @@ static JSValue js_AnimationPlayer_set_auto_capture(JSContext *ctx, JSValueConst 
 }
 
 static JSValue js_AnimationPlayer_is_auto_capture(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2926,7 +3979,7 @@ static JSValue js_AnimationPlayer_is_auto_capture(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_AnimationPlayer_set_auto_capture_duration(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -2938,7 +3991,7 @@ static JSValue js_AnimationPlayer_set_auto_capture_duration(JSContext *ctx, JSVa
 }
 
 static JSValue js_AnimationPlayer_get_auto_capture_duration(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -2946,8 +3999,50 @@ static JSValue js_AnimationPlayer_get_auto_capture_duration(JSContext *ctx, JSVa
     return JS_NewFloat64(ctx, (double)ret);
 }
 
+static JSValue js_AnimationPlayer_set_auto_capture_transition_type(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_auto_capture_transition_type", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_AnimationPlayer_get_auto_capture_transition_type(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_auto_capture_transition_type", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_AnimationPlayer_set_auto_capture_ease_type(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_auto_capture_ease_type", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_AnimationPlayer_get_auto_capture_ease_type(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_auto_capture_ease_type", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_AnimationPlayer_play(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -2962,7 +4057,7 @@ static JSValue js_AnimationPlayer_play(JSContext *ctx, JSValueConst this_val, in
 }
 
 static JSValue js_AnimationPlayer_play_section_with_markers(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -2979,7 +4074,7 @@ static JSValue js_AnimationPlayer_play_section_with_markers(JSContext *ctx, JSVa
 }
 
 static JSValue js_AnimationPlayer_play_section(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -2996,7 +4091,7 @@ static JSValue js_AnimationPlayer_play_section(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_AnimationPlayer_play_backwards(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -3009,7 +4104,7 @@ static JSValue js_AnimationPlayer_play_backwards(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_AnimationPlayer_play_section_with_markers_backwards(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -3024,7 +4119,7 @@ static JSValue js_AnimationPlayer_play_section_with_markers_backwards(JSContext 
 }
 
 static JSValue js_AnimationPlayer_play_section_backwards(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -3038,8 +4133,26 @@ static JSValue js_AnimationPlayer_play_section_backwards(JSContext *ctx, JSValue
     return JS_UNDEFINED;
 }
 
+static JSValue js_AnimationPlayer_play_with_capture(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    String arg0 = StringName(js_to_string(ctx, argv[0]));
+    double arg1 = js_to_float(ctx, argv[1]);
+    double arg2 = js_to_float(ctx, argv[2]);
+    double arg3 = js_to_float(ctx, argv[3]);
+    bool arg4 = JS_ToBool(ctx, argv[4]);
+    int64_t arg5 = js_to_int(ctx, argv[5]);
+    int64_t arg6 = js_to_int(ctx, argv[6]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1), Variant(arg2), Variant(arg3), Variant(arg4), Variant(arg5), Variant(arg6) };
+    const Variant *argptrs[] = { &args[0], &args[1], &args[2], &args[3], &args[4], &args[5], &args[6] };
+    obj->callp("play_with_capture", argptrs, 7, ce);
+    return JS_UNDEFINED;
+}
+
 static JSValue js_AnimationPlayer_pause(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3048,7 +4161,7 @@ static JSValue js_AnimationPlayer_pause(JSContext *ctx, JSValueConst this_val, i
 }
 
 static JSValue js_AnimationPlayer_stop(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -3060,7 +4173,7 @@ static JSValue js_AnimationPlayer_stop(JSContext *ctx, JSValueConst this_val, in
 }
 
 static JSValue js_AnimationPlayer_is_playing(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3069,7 +4182,7 @@ static JSValue js_AnimationPlayer_is_playing(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_AnimationPlayer_set_current_animation(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = js_to_string(ctx, argv[0]);
@@ -3081,7 +4194,7 @@ static JSValue js_AnimationPlayer_set_current_animation(JSContext *ctx, JSValueC
 }
 
 static JSValue js_AnimationPlayer_get_current_animation(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3090,7 +4203,7 @@ static JSValue js_AnimationPlayer_get_current_animation(JSContext *ctx, JSValueC
 }
 
 static JSValue js_AnimationPlayer_set_assigned_animation(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = js_to_string(ctx, argv[0]);
@@ -3102,7 +4215,7 @@ static JSValue js_AnimationPlayer_set_assigned_animation(JSContext *ctx, JSValue
 }
 
 static JSValue js_AnimationPlayer_get_assigned_animation(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3111,7 +4224,7 @@ static JSValue js_AnimationPlayer_get_assigned_animation(JSContext *ctx, JSValue
 }
 
 static JSValue js_AnimationPlayer_queue(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -3123,7 +4236,7 @@ static JSValue js_AnimationPlayer_queue(JSContext *ctx, JSValueConst this_val, i
 }
 
 static JSValue js_AnimationPlayer_clear_queue(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3132,7 +4245,7 @@ static JSValue js_AnimationPlayer_clear_queue(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_AnimationPlayer_set_speed_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3144,7 +4257,7 @@ static JSValue js_AnimationPlayer_set_speed_scale(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_AnimationPlayer_get_speed_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3153,7 +4266,7 @@ static JSValue js_AnimationPlayer_get_speed_scale(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_AnimationPlayer_get_playing_speed(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3162,7 +4275,7 @@ static JSValue js_AnimationPlayer_get_playing_speed(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_AnimationPlayer_set_autoplay(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = js_to_string(ctx, argv[0]);
@@ -3174,7 +4287,7 @@ static JSValue js_AnimationPlayer_set_autoplay(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_AnimationPlayer_get_autoplay(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3183,7 +4296,7 @@ static JSValue js_AnimationPlayer_get_autoplay(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_AnimationPlayer_set_movie_quit_on_finish_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -3195,7 +4308,7 @@ static JSValue js_AnimationPlayer_set_movie_quit_on_finish_enabled(JSContext *ct
 }
 
 static JSValue js_AnimationPlayer_is_movie_quit_on_finish_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3204,7 +4317,7 @@ static JSValue js_AnimationPlayer_is_movie_quit_on_finish_enabled(JSContext *ctx
 }
 
 static JSValue js_AnimationPlayer_get_current_animation_position(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3213,7 +4326,7 @@ static JSValue js_AnimationPlayer_get_current_animation_position(JSContext *ctx,
 }
 
 static JSValue js_AnimationPlayer_get_current_animation_length(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3222,7 +4335,7 @@ static JSValue js_AnimationPlayer_get_current_animation_length(JSContext *ctx, J
 }
 
 static JSValue js_AnimationPlayer_set_section_with_markers(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -3235,7 +4348,7 @@ static JSValue js_AnimationPlayer_set_section_with_markers(JSContext *ctx, JSVal
 }
 
 static JSValue js_AnimationPlayer_set_section(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3248,7 +4361,7 @@ static JSValue js_AnimationPlayer_set_section(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_AnimationPlayer_reset_section(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3257,7 +4370,7 @@ static JSValue js_AnimationPlayer_reset_section(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_AnimationPlayer_get_section_start_time(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3266,7 +4379,7 @@ static JSValue js_AnimationPlayer_get_section_start_time(JSContext *ctx, JSValue
 }
 
 static JSValue js_AnimationPlayer_get_section_end_time(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3275,7 +4388,7 @@ static JSValue js_AnimationPlayer_get_section_end_time(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_AnimationPlayer_has_section(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3284,7 +4397,7 @@ static JSValue js_AnimationPlayer_has_section(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_AnimationPlayer_seek(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3297,8 +4410,50 @@ static JSValue js_AnimationPlayer_seek(JSContext *ctx, JSValueConst this_val, in
     return JS_UNDEFINED;
 }
 
+static JSValue js_AnimationPlayer_set_process_callback(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_process_callback", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_AnimationPlayer_get_process_callback(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_process_callback", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_AnimationPlayer_set_method_call_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_method_call_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_AnimationPlayer_get_method_call_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_method_call_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_AnimationPlayer_set_root(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = NodePath(js_to_string(ctx, argv[0]));
@@ -3310,7 +4465,7 @@ static JSValue js_AnimationPlayer_set_root(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_AnimationPlayer_get_root(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3318,8 +4473,18 @@ static JSValue js_AnimationPlayer_get_root(JSContext *ctx, JSValueConst this_val
     return string_to_js(ctx, String((String)ret));
 }
 
-static void quickjs_register_AnimationPlayer(JSContext *ctx, JSValue global) {
+static JSValue js_AnimationPlayer_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("AnimationPlayer");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_AnimationPlayer(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "animation_set_next", JS_NewCFunction(ctx, js_AnimationPlayer_animation_set_next, "animation_set_next", 2));
     JS_SetPropertyStr(ctx, proto, "animation_get_next", JS_NewCFunction(ctx, js_AnimationPlayer_animation_get_next, "animation_get_next", 1));
     JS_SetPropertyStr(ctx, proto, "set_blend_time", JS_NewCFunction(ctx, js_AnimationPlayer_set_blend_time, "set_blend_time", 3));
@@ -3330,12 +4495,17 @@ static void quickjs_register_AnimationPlayer(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "is_auto_capture", JS_NewCFunction(ctx, js_AnimationPlayer_is_auto_capture, "is_auto_capture", 0));
     JS_SetPropertyStr(ctx, proto, "set_auto_capture_duration", JS_NewCFunction(ctx, js_AnimationPlayer_set_auto_capture_duration, "set_auto_capture_duration", 1));
     JS_SetPropertyStr(ctx, proto, "get_auto_capture_duration", JS_NewCFunction(ctx, js_AnimationPlayer_get_auto_capture_duration, "get_auto_capture_duration", 0));
+    JS_SetPropertyStr(ctx, proto, "set_auto_capture_transition_type", JS_NewCFunction(ctx, js_AnimationPlayer_set_auto_capture_transition_type, "set_auto_capture_transition_type", 1));
+    JS_SetPropertyStr(ctx, proto, "get_auto_capture_transition_type", JS_NewCFunction(ctx, js_AnimationPlayer_get_auto_capture_transition_type, "get_auto_capture_transition_type", 0));
+    JS_SetPropertyStr(ctx, proto, "set_auto_capture_ease_type", JS_NewCFunction(ctx, js_AnimationPlayer_set_auto_capture_ease_type, "set_auto_capture_ease_type", 1));
+    JS_SetPropertyStr(ctx, proto, "get_auto_capture_ease_type", JS_NewCFunction(ctx, js_AnimationPlayer_get_auto_capture_ease_type, "get_auto_capture_ease_type", 0));
     JS_SetPropertyStr(ctx, proto, "play", JS_NewCFunction(ctx, js_AnimationPlayer_play, "play", 4));
     JS_SetPropertyStr(ctx, proto, "play_section_with_markers", JS_NewCFunction(ctx, js_AnimationPlayer_play_section_with_markers, "play_section_with_markers", 6));
     JS_SetPropertyStr(ctx, proto, "play_section", JS_NewCFunction(ctx, js_AnimationPlayer_play_section, "play_section", 6));
     JS_SetPropertyStr(ctx, proto, "play_backwards", JS_NewCFunction(ctx, js_AnimationPlayer_play_backwards, "play_backwards", 2));
     JS_SetPropertyStr(ctx, proto, "play_section_with_markers_backwards", JS_NewCFunction(ctx, js_AnimationPlayer_play_section_with_markers_backwards, "play_section_with_markers_backwards", 4));
     JS_SetPropertyStr(ctx, proto, "play_section_backwards", JS_NewCFunction(ctx, js_AnimationPlayer_play_section_backwards, "play_section_backwards", 4));
+    JS_SetPropertyStr(ctx, proto, "play_with_capture", JS_NewCFunction(ctx, js_AnimationPlayer_play_with_capture, "play_with_capture", 7));
     JS_SetPropertyStr(ctx, proto, "pause", JS_NewCFunction(ctx, js_AnimationPlayer_pause, "pause", 0));
     JS_SetPropertyStr(ctx, proto, "stop", JS_NewCFunction(ctx, js_AnimationPlayer_stop, "stop", 1));
     JS_SetPropertyStr(ctx, proto, "is_playing", JS_NewCFunction(ctx, js_AnimationPlayer_is_playing, "is_playing", 0));
@@ -3361,13 +4531,20 @@ static void quickjs_register_AnimationPlayer(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "get_section_end_time", JS_NewCFunction(ctx, js_AnimationPlayer_get_section_end_time, "get_section_end_time", 0));
     JS_SetPropertyStr(ctx, proto, "has_section", JS_NewCFunction(ctx, js_AnimationPlayer_has_section, "has_section", 0));
     JS_SetPropertyStr(ctx, proto, "seek", JS_NewCFunction(ctx, js_AnimationPlayer_seek, "seek", 3));
+    JS_SetPropertyStr(ctx, proto, "set_process_callback", JS_NewCFunction(ctx, js_AnimationPlayer_set_process_callback, "set_process_callback", 1));
+    JS_SetPropertyStr(ctx, proto, "get_process_callback", JS_NewCFunction(ctx, js_AnimationPlayer_get_process_callback, "get_process_callback", 0));
+    JS_SetPropertyStr(ctx, proto, "set_method_call_mode", JS_NewCFunction(ctx, js_AnimationPlayer_set_method_call_mode, "set_method_call_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_method_call_mode", JS_NewCFunction(ctx, js_AnimationPlayer_get_method_call_mode, "get_method_call_mode", 0));
     JS_SetPropertyStr(ctx, proto, "set_root", JS_NewCFunction(ctx, js_AnimationPlayer_set_root, "set_root", 1));
     JS_SetPropertyStr(ctx, proto, "get_root", JS_NewCFunction(ctx, js_AnimationPlayer_get_root, "get_root", 0));
     JS_SetPropertyStr(ctx, global, "_AnimationPlayer_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_AnimationPlayer_constructor, "AnimationPlayer", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "AnimationPlayer", ctor);
 }
 
 static JSValue js_AnimationTree_set_advance_expression_base_node(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = NodePath(js_to_string(ctx, argv[0]));
@@ -3379,7 +4556,7 @@ static JSValue js_AnimationTree_set_advance_expression_base_node(JSContext *ctx,
 }
 
 static JSValue js_AnimationTree_get_advance_expression_base_node(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3388,7 +4565,7 @@ static JSValue js_AnimationTree_get_advance_expression_base_node(JSContext *ctx,
 }
 
 static JSValue js_AnimationTree_set_animation_player(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = NodePath(js_to_string(ctx, argv[0]));
@@ -3400,7 +4577,7 @@ static JSValue js_AnimationTree_set_animation_player(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_AnimationTree_get_animation_player(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3408,17 +4585,53 @@ static JSValue js_AnimationTree_get_animation_player(JSContext *ctx, JSValueCons
     return string_to_js(ctx, String((String)ret));
 }
 
-static void quickjs_register_AnimationTree(JSContext *ctx, JSValue global) {
+static JSValue js_AnimationTree_set_process_callback(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_process_callback", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_AnimationTree_get_process_callback(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_process_callback", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_AnimationTree_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("AnimationTree");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_AnimationTree(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_advance_expression_base_node", JS_NewCFunction(ctx, js_AnimationTree_set_advance_expression_base_node, "set_advance_expression_base_node", 1));
     JS_SetPropertyStr(ctx, proto, "get_advance_expression_base_node", JS_NewCFunction(ctx, js_AnimationTree_get_advance_expression_base_node, "get_advance_expression_base_node", 0));
     JS_SetPropertyStr(ctx, proto, "set_animation_player", JS_NewCFunction(ctx, js_AnimationTree_set_animation_player, "set_animation_player", 1));
     JS_SetPropertyStr(ctx, proto, "get_animation_player", JS_NewCFunction(ctx, js_AnimationTree_get_animation_player, "get_animation_player", 0));
+    JS_SetPropertyStr(ctx, proto, "set_process_callback", JS_NewCFunction(ctx, js_AnimationTree_set_process_callback, "set_process_callback", 1));
+    JS_SetPropertyStr(ctx, proto, "get_process_callback", JS_NewCFunction(ctx, js_AnimationTree_get_process_callback, "get_process_callback", 0));
     JS_SetPropertyStr(ctx, global, "_AnimationTree_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_AnimationTree_constructor, "AnimationTree", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "AnimationTree", ctor);
 }
 
 static JSValue js_AudioStreamPlayer3D_set_volume_db(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3430,7 +4643,7 @@ static JSValue js_AudioStreamPlayer3D_set_volume_db(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_AudioStreamPlayer3D_get_volume_db(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3439,7 +4652,7 @@ static JSValue js_AudioStreamPlayer3D_get_volume_db(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_AudioStreamPlayer3D_set_volume_linear(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3451,7 +4664,7 @@ static JSValue js_AudioStreamPlayer3D_set_volume_linear(JSContext *ctx, JSValueC
 }
 
 static JSValue js_AudioStreamPlayer3D_get_volume_linear(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3460,7 +4673,7 @@ static JSValue js_AudioStreamPlayer3D_get_volume_linear(JSContext *ctx, JSValueC
 }
 
 static JSValue js_AudioStreamPlayer3D_set_unit_size(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3472,7 +4685,7 @@ static JSValue js_AudioStreamPlayer3D_set_unit_size(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_AudioStreamPlayer3D_get_unit_size(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3481,7 +4694,7 @@ static JSValue js_AudioStreamPlayer3D_get_unit_size(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_AudioStreamPlayer3D_set_max_db(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3493,7 +4706,7 @@ static JSValue js_AudioStreamPlayer3D_set_max_db(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_AudioStreamPlayer3D_get_max_db(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3502,7 +4715,7 @@ static JSValue js_AudioStreamPlayer3D_get_max_db(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_AudioStreamPlayer3D_set_pitch_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3514,7 +4727,7 @@ static JSValue js_AudioStreamPlayer3D_set_pitch_scale(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_AudioStreamPlayer3D_get_pitch_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3523,7 +4736,7 @@ static JSValue js_AudioStreamPlayer3D_get_pitch_scale(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_AudioStreamPlayer3D_play(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3535,7 +4748,7 @@ static JSValue js_AudioStreamPlayer3D_play(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_AudioStreamPlayer3D_seek(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3547,7 +4760,7 @@ static JSValue js_AudioStreamPlayer3D_seek(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_AudioStreamPlayer3D_stop(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3556,7 +4769,7 @@ static JSValue js_AudioStreamPlayer3D_stop(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_AudioStreamPlayer3D_is_playing(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3565,7 +4778,7 @@ static JSValue js_AudioStreamPlayer3D_is_playing(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_AudioStreamPlayer3D_get_playback_position(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3574,7 +4787,7 @@ static JSValue js_AudioStreamPlayer3D_get_playback_position(JSContext *ctx, JSVa
 }
 
 static JSValue js_AudioStreamPlayer3D_set_bus(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -3586,7 +4799,7 @@ static JSValue js_AudioStreamPlayer3D_set_bus(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_AudioStreamPlayer3D_get_bus(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3595,7 +4808,7 @@ static JSValue js_AudioStreamPlayer3D_get_bus(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_AudioStreamPlayer3D_set_autoplay(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -3607,7 +4820,7 @@ static JSValue js_AudioStreamPlayer3D_set_autoplay(JSContext *ctx, JSValueConst 
 }
 
 static JSValue js_AudioStreamPlayer3D_is_autoplay_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3616,7 +4829,7 @@ static JSValue js_AudioStreamPlayer3D_is_autoplay_enabled(JSContext *ctx, JSValu
 }
 
 static JSValue js_AudioStreamPlayer3D_set_playing(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -3628,7 +4841,7 @@ static JSValue js_AudioStreamPlayer3D_set_playing(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_AudioStreamPlayer3D_set_max_distance(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3640,7 +4853,7 @@ static JSValue js_AudioStreamPlayer3D_set_max_distance(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_AudioStreamPlayer3D_get_max_distance(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3649,7 +4862,7 @@ static JSValue js_AudioStreamPlayer3D_get_max_distance(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_AudioStreamPlayer3D_set_area_mask(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -3661,7 +4874,7 @@ static JSValue js_AudioStreamPlayer3D_set_area_mask(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_AudioStreamPlayer3D_get_area_mask(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3670,7 +4883,7 @@ static JSValue js_AudioStreamPlayer3D_get_area_mask(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_AudioStreamPlayer3D_set_emission_angle(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3682,7 +4895,7 @@ static JSValue js_AudioStreamPlayer3D_set_emission_angle(JSContext *ctx, JSValue
 }
 
 static JSValue js_AudioStreamPlayer3D_get_emission_angle(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3691,7 +4904,7 @@ static JSValue js_AudioStreamPlayer3D_get_emission_angle(JSContext *ctx, JSValue
 }
 
 static JSValue js_AudioStreamPlayer3D_set_emission_angle_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -3703,7 +4916,7 @@ static JSValue js_AudioStreamPlayer3D_set_emission_angle_enabled(JSContext *ctx,
 }
 
 static JSValue js_AudioStreamPlayer3D_is_emission_angle_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3712,7 +4925,7 @@ static JSValue js_AudioStreamPlayer3D_is_emission_angle_enabled(JSContext *ctx, 
 }
 
 static JSValue js_AudioStreamPlayer3D_set_emission_angle_filter_attenuation_db(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3724,7 +4937,7 @@ static JSValue js_AudioStreamPlayer3D_set_emission_angle_filter_attenuation_db(J
 }
 
 static JSValue js_AudioStreamPlayer3D_get_emission_angle_filter_attenuation_db(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3733,7 +4946,7 @@ static JSValue js_AudioStreamPlayer3D_get_emission_angle_filter_attenuation_db(J
 }
 
 static JSValue js_AudioStreamPlayer3D_set_attenuation_filter_cutoff_hz(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3745,7 +4958,7 @@ static JSValue js_AudioStreamPlayer3D_set_attenuation_filter_cutoff_hz(JSContext
 }
 
 static JSValue js_AudioStreamPlayer3D_get_attenuation_filter_cutoff_hz(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3754,7 +4967,7 @@ static JSValue js_AudioStreamPlayer3D_get_attenuation_filter_cutoff_hz(JSContext
 }
 
 static JSValue js_AudioStreamPlayer3D_set_attenuation_filter_db(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3766,7 +4979,7 @@ static JSValue js_AudioStreamPlayer3D_set_attenuation_filter_db(JSContext *ctx, 
 }
 
 static JSValue js_AudioStreamPlayer3D_get_attenuation_filter_db(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3774,8 +4987,50 @@ static JSValue js_AudioStreamPlayer3D_get_attenuation_filter_db(JSContext *ctx, 
     return JS_NewFloat64(ctx, (double)ret);
 }
 
+static JSValue js_AudioStreamPlayer3D_set_attenuation_model(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_attenuation_model", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_AudioStreamPlayer3D_get_attenuation_model(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_attenuation_model", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_AudioStreamPlayer3D_set_doppler_tracking(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_doppler_tracking", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_AudioStreamPlayer3D_get_doppler_tracking(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_doppler_tracking", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_AudioStreamPlayer3D_set_stream_paused(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -3787,7 +5042,7 @@ static JSValue js_AudioStreamPlayer3D_set_stream_paused(JSContext *ctx, JSValueC
 }
 
 static JSValue js_AudioStreamPlayer3D_get_stream_paused(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3796,7 +5051,7 @@ static JSValue js_AudioStreamPlayer3D_get_stream_paused(JSContext *ctx, JSValueC
 }
 
 static JSValue js_AudioStreamPlayer3D_set_max_polyphony(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -3808,7 +5063,7 @@ static JSValue js_AudioStreamPlayer3D_set_max_polyphony(JSContext *ctx, JSValueC
 }
 
 static JSValue js_AudioStreamPlayer3D_get_max_polyphony(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3817,7 +5072,7 @@ static JSValue js_AudioStreamPlayer3D_get_max_polyphony(JSContext *ctx, JSValueC
 }
 
 static JSValue js_AudioStreamPlayer3D_set_panning_strength(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3829,7 +5084,7 @@ static JSValue js_AudioStreamPlayer3D_set_panning_strength(JSContext *ctx, JSVal
 }
 
 static JSValue js_AudioStreamPlayer3D_get_panning_strength(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3838,7 +5093,7 @@ static JSValue js_AudioStreamPlayer3D_get_panning_strength(JSContext *ctx, JSVal
 }
 
 static JSValue js_AudioStreamPlayer3D_has_stream_playback(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3846,8 +5101,39 @@ static JSValue js_AudioStreamPlayer3D_has_stream_playback(JSContext *ctx, JSValu
     return JS_NewBool(ctx, (bool)ret);
 }
 
-static void quickjs_register_AudioStreamPlayer3D(JSContext *ctx, JSValue global) {
+static JSValue js_AudioStreamPlayer3D_set_playback_type(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_playback_type", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_AudioStreamPlayer3D_get_playback_type(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_playback_type", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_AudioStreamPlayer3D_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("AudioStreamPlayer3D");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_AudioStreamPlayer3D(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node3D_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_volume_db", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_set_volume_db, "set_volume_db", 1));
     JS_SetPropertyStr(ctx, proto, "get_volume_db", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_get_volume_db, "get_volume_db", 0));
     JS_SetPropertyStr(ctx, proto, "set_volume_linear", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_set_volume_linear, "set_volume_linear", 1));
@@ -3882,6 +5168,10 @@ static void quickjs_register_AudioStreamPlayer3D(JSContext *ctx, JSValue global)
     JS_SetPropertyStr(ctx, proto, "get_attenuation_filter_cutoff_hz", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_get_attenuation_filter_cutoff_hz, "get_attenuation_filter_cutoff_hz", 0));
     JS_SetPropertyStr(ctx, proto, "set_attenuation_filter_db", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_set_attenuation_filter_db, "set_attenuation_filter_db", 1));
     JS_SetPropertyStr(ctx, proto, "get_attenuation_filter_db", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_get_attenuation_filter_db, "get_attenuation_filter_db", 0));
+    JS_SetPropertyStr(ctx, proto, "set_attenuation_model", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_set_attenuation_model, "set_attenuation_model", 1));
+    JS_SetPropertyStr(ctx, proto, "get_attenuation_model", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_get_attenuation_model, "get_attenuation_model", 0));
+    JS_SetPropertyStr(ctx, proto, "set_doppler_tracking", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_set_doppler_tracking, "set_doppler_tracking", 1));
+    JS_SetPropertyStr(ctx, proto, "get_doppler_tracking", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_get_doppler_tracking, "get_doppler_tracking", 0));
     JS_SetPropertyStr(ctx, proto, "set_stream_paused", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_set_stream_paused, "set_stream_paused", 1));
     JS_SetPropertyStr(ctx, proto, "get_stream_paused", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_get_stream_paused, "get_stream_paused", 0));
     JS_SetPropertyStr(ctx, proto, "set_max_polyphony", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_set_max_polyphony, "set_max_polyphony", 1));
@@ -3889,11 +5179,16 @@ static void quickjs_register_AudioStreamPlayer3D(JSContext *ctx, JSValue global)
     JS_SetPropertyStr(ctx, proto, "set_panning_strength", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_set_panning_strength, "set_panning_strength", 1));
     JS_SetPropertyStr(ctx, proto, "get_panning_strength", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_get_panning_strength, "get_panning_strength", 0));
     JS_SetPropertyStr(ctx, proto, "has_stream_playback", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_has_stream_playback, "has_stream_playback", 0));
+    JS_SetPropertyStr(ctx, proto, "set_playback_type", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_set_playback_type, "set_playback_type", 1));
+    JS_SetPropertyStr(ctx, proto, "get_playback_type", JS_NewCFunction(ctx, js_AudioStreamPlayer3D_get_playback_type, "get_playback_type", 0));
     JS_SetPropertyStr(ctx, global, "_AudioStreamPlayer3D_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_AudioStreamPlayer3D_constructor, "AudioStreamPlayer3D", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "AudioStreamPlayer3D", ctor);
 }
 
 static JSValue js_AudioStreamPlayer_set_volume_db(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3905,7 +5200,7 @@ static JSValue js_AudioStreamPlayer_set_volume_db(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_AudioStreamPlayer_get_volume_db(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3914,7 +5209,7 @@ static JSValue js_AudioStreamPlayer_get_volume_db(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_AudioStreamPlayer_set_volume_linear(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3926,7 +5221,7 @@ static JSValue js_AudioStreamPlayer_set_volume_linear(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_AudioStreamPlayer_get_volume_linear(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3935,7 +5230,7 @@ static JSValue js_AudioStreamPlayer_get_volume_linear(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_AudioStreamPlayer_set_pitch_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3947,7 +5242,7 @@ static JSValue js_AudioStreamPlayer_set_pitch_scale(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_AudioStreamPlayer_get_pitch_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3956,7 +5251,7 @@ static JSValue js_AudioStreamPlayer_get_pitch_scale(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_AudioStreamPlayer_play(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3968,7 +5263,7 @@ static JSValue js_AudioStreamPlayer_play(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_AudioStreamPlayer_seek(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -3980,7 +5275,7 @@ static JSValue js_AudioStreamPlayer_seek(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_AudioStreamPlayer_stop(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3989,7 +5284,7 @@ static JSValue js_AudioStreamPlayer_stop(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_AudioStreamPlayer_is_playing(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -3998,7 +5293,7 @@ static JSValue js_AudioStreamPlayer_is_playing(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_AudioStreamPlayer_get_playback_position(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4007,7 +5302,7 @@ static JSValue js_AudioStreamPlayer_get_playback_position(JSContext *ctx, JSValu
 }
 
 static JSValue js_AudioStreamPlayer_set_bus(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -4019,7 +5314,7 @@ static JSValue js_AudioStreamPlayer_set_bus(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_AudioStreamPlayer_get_bus(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4028,7 +5323,7 @@ static JSValue js_AudioStreamPlayer_get_bus(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_AudioStreamPlayer_set_autoplay(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -4040,7 +5335,7 @@ static JSValue js_AudioStreamPlayer_set_autoplay(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_AudioStreamPlayer_is_autoplay_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4048,8 +5343,29 @@ static JSValue js_AudioStreamPlayer_is_autoplay_enabled(JSContext *ctx, JSValueC
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_AudioStreamPlayer_set_mix_target(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_mix_target", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_AudioStreamPlayer_get_mix_target(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_mix_target", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_AudioStreamPlayer_set_playing(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -4061,7 +5377,7 @@ static JSValue js_AudioStreamPlayer_set_playing(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_AudioStreamPlayer_set_stream_paused(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -4073,7 +5389,7 @@ static JSValue js_AudioStreamPlayer_set_stream_paused(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_AudioStreamPlayer_get_stream_paused(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4082,7 +5398,7 @@ static JSValue js_AudioStreamPlayer_get_stream_paused(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_AudioStreamPlayer_set_max_polyphony(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -4094,7 +5410,7 @@ static JSValue js_AudioStreamPlayer_set_max_polyphony(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_AudioStreamPlayer_get_max_polyphony(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4103,7 +5419,7 @@ static JSValue js_AudioStreamPlayer_get_max_polyphony(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_AudioStreamPlayer_has_stream_playback(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4111,8 +5427,39 @@ static JSValue js_AudioStreamPlayer_has_stream_playback(JSContext *ctx, JSValueC
     return JS_NewBool(ctx, (bool)ret);
 }
 
-static void quickjs_register_AudioStreamPlayer(JSContext *ctx, JSValue global) {
+static JSValue js_AudioStreamPlayer_set_playback_type(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_playback_type", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_AudioStreamPlayer_get_playback_type(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_playback_type", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_AudioStreamPlayer_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("AudioStreamPlayer");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_AudioStreamPlayer(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_volume_db", JS_NewCFunction(ctx, js_AudioStreamPlayer_set_volume_db, "set_volume_db", 1));
     JS_SetPropertyStr(ctx, proto, "get_volume_db", JS_NewCFunction(ctx, js_AudioStreamPlayer_get_volume_db, "get_volume_db", 0));
     JS_SetPropertyStr(ctx, proto, "set_volume_linear", JS_NewCFunction(ctx, js_AudioStreamPlayer_set_volume_linear, "set_volume_linear", 1));
@@ -4128,17 +5475,24 @@ static void quickjs_register_AudioStreamPlayer(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "get_bus", JS_NewCFunction(ctx, js_AudioStreamPlayer_get_bus, "get_bus", 0));
     JS_SetPropertyStr(ctx, proto, "set_autoplay", JS_NewCFunction(ctx, js_AudioStreamPlayer_set_autoplay, "set_autoplay", 1));
     JS_SetPropertyStr(ctx, proto, "is_autoplay_enabled", JS_NewCFunction(ctx, js_AudioStreamPlayer_is_autoplay_enabled, "is_autoplay_enabled", 0));
+    JS_SetPropertyStr(ctx, proto, "set_mix_target", JS_NewCFunction(ctx, js_AudioStreamPlayer_set_mix_target, "set_mix_target", 1));
+    JS_SetPropertyStr(ctx, proto, "get_mix_target", JS_NewCFunction(ctx, js_AudioStreamPlayer_get_mix_target, "get_mix_target", 0));
     JS_SetPropertyStr(ctx, proto, "set_playing", JS_NewCFunction(ctx, js_AudioStreamPlayer_set_playing, "set_playing", 1));
     JS_SetPropertyStr(ctx, proto, "set_stream_paused", JS_NewCFunction(ctx, js_AudioStreamPlayer_set_stream_paused, "set_stream_paused", 1));
     JS_SetPropertyStr(ctx, proto, "get_stream_paused", JS_NewCFunction(ctx, js_AudioStreamPlayer_get_stream_paused, "get_stream_paused", 0));
     JS_SetPropertyStr(ctx, proto, "set_max_polyphony", JS_NewCFunction(ctx, js_AudioStreamPlayer_set_max_polyphony, "set_max_polyphony", 1));
     JS_SetPropertyStr(ctx, proto, "get_max_polyphony", JS_NewCFunction(ctx, js_AudioStreamPlayer_get_max_polyphony, "get_max_polyphony", 0));
     JS_SetPropertyStr(ctx, proto, "has_stream_playback", JS_NewCFunction(ctx, js_AudioStreamPlayer_has_stream_playback, "has_stream_playback", 0));
+    JS_SetPropertyStr(ctx, proto, "set_playback_type", JS_NewCFunction(ctx, js_AudioStreamPlayer_set_playback_type, "set_playback_type", 1));
+    JS_SetPropertyStr(ctx, proto, "get_playback_type", JS_NewCFunction(ctx, js_AudioStreamPlayer_get_playback_type, "get_playback_type", 0));
     JS_SetPropertyStr(ctx, global, "_AudioStreamPlayer_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_AudioStreamPlayer_constructor, "AudioStreamPlayer", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "AudioStreamPlayer", ctor);
 }
 
 static JSValue js_NavigationAgent3D_set_avoidance_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -4150,7 +5504,7 @@ static JSValue js_NavigationAgent3D_set_avoidance_enabled(JSContext *ctx, JSValu
 }
 
 static JSValue js_NavigationAgent3D_get_avoidance_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4159,7 +5513,7 @@ static JSValue js_NavigationAgent3D_get_avoidance_enabled(JSContext *ctx, JSValu
 }
 
 static JSValue js_NavigationAgent3D_set_path_desired_distance(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -4171,7 +5525,7 @@ static JSValue js_NavigationAgent3D_set_path_desired_distance(JSContext *ctx, JS
 }
 
 static JSValue js_NavigationAgent3D_get_path_desired_distance(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4180,7 +5534,7 @@ static JSValue js_NavigationAgent3D_get_path_desired_distance(JSContext *ctx, JS
 }
 
 static JSValue js_NavigationAgent3D_set_target_desired_distance(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -4192,7 +5546,7 @@ static JSValue js_NavigationAgent3D_set_target_desired_distance(JSContext *ctx, 
 }
 
 static JSValue js_NavigationAgent3D_get_target_desired_distance(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4201,7 +5555,7 @@ static JSValue js_NavigationAgent3D_get_target_desired_distance(JSContext *ctx, 
 }
 
 static JSValue js_NavigationAgent3D_set_radius(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -4213,7 +5567,7 @@ static JSValue js_NavigationAgent3D_set_radius(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_NavigationAgent3D_get_radius(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4222,7 +5576,7 @@ static JSValue js_NavigationAgent3D_get_radius(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_NavigationAgent3D_set_height(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -4234,7 +5588,7 @@ static JSValue js_NavigationAgent3D_set_height(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_NavigationAgent3D_get_height(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4243,7 +5597,7 @@ static JSValue js_NavigationAgent3D_get_height(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_NavigationAgent3D_set_path_height_offset(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -4255,7 +5609,7 @@ static JSValue js_NavigationAgent3D_set_path_height_offset(JSContext *ctx, JSVal
 }
 
 static JSValue js_NavigationAgent3D_get_path_height_offset(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4264,7 +5618,7 @@ static JSValue js_NavigationAgent3D_get_path_height_offset(JSContext *ctx, JSVal
 }
 
 static JSValue js_NavigationAgent3D_set_use_3d_avoidance(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -4276,7 +5630,7 @@ static JSValue js_NavigationAgent3D_set_use_3d_avoidance(JSContext *ctx, JSValue
 }
 
 static JSValue js_NavigationAgent3D_get_use_3d_avoidance(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4285,7 +5639,7 @@ static JSValue js_NavigationAgent3D_get_use_3d_avoidance(JSContext *ctx, JSValue
 }
 
 static JSValue js_NavigationAgent3D_set_keep_y_velocity(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -4297,7 +5651,7 @@ static JSValue js_NavigationAgent3D_set_keep_y_velocity(JSContext *ctx, JSValueC
 }
 
 static JSValue js_NavigationAgent3D_get_keep_y_velocity(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4306,7 +5660,7 @@ static JSValue js_NavigationAgent3D_get_keep_y_velocity(JSContext *ctx, JSValueC
 }
 
 static JSValue js_NavigationAgent3D_set_neighbor_distance(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -4318,7 +5672,7 @@ static JSValue js_NavigationAgent3D_set_neighbor_distance(JSContext *ctx, JSValu
 }
 
 static JSValue js_NavigationAgent3D_get_neighbor_distance(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4327,7 +5681,7 @@ static JSValue js_NavigationAgent3D_get_neighbor_distance(JSContext *ctx, JSValu
 }
 
 static JSValue js_NavigationAgent3D_set_max_neighbors(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -4339,7 +5693,7 @@ static JSValue js_NavigationAgent3D_set_max_neighbors(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_NavigationAgent3D_get_max_neighbors(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4348,7 +5702,7 @@ static JSValue js_NavigationAgent3D_get_max_neighbors(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_NavigationAgent3D_set_time_horizon_agents(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -4360,7 +5714,7 @@ static JSValue js_NavigationAgent3D_set_time_horizon_agents(JSContext *ctx, JSVa
 }
 
 static JSValue js_NavigationAgent3D_get_time_horizon_agents(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4369,7 +5723,7 @@ static JSValue js_NavigationAgent3D_get_time_horizon_agents(JSContext *ctx, JSVa
 }
 
 static JSValue js_NavigationAgent3D_set_time_horizon_obstacles(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -4381,7 +5735,7 @@ static JSValue js_NavigationAgent3D_set_time_horizon_obstacles(JSContext *ctx, J
 }
 
 static JSValue js_NavigationAgent3D_get_time_horizon_obstacles(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4390,7 +5744,7 @@ static JSValue js_NavigationAgent3D_get_time_horizon_obstacles(JSContext *ctx, J
 }
 
 static JSValue js_NavigationAgent3D_set_max_speed(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -4402,7 +5756,7 @@ static JSValue js_NavigationAgent3D_set_max_speed(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_NavigationAgent3D_get_max_speed(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4411,7 +5765,7 @@ static JSValue js_NavigationAgent3D_get_max_speed(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_NavigationAgent3D_set_path_max_distance(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -4423,7 +5777,7 @@ static JSValue js_NavigationAgent3D_set_path_max_distance(JSContext *ctx, JSValu
 }
 
 static JSValue js_NavigationAgent3D_get_path_max_distance(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4432,7 +5786,7 @@ static JSValue js_NavigationAgent3D_get_path_max_distance(JSContext *ctx, JSValu
 }
 
 static JSValue js_NavigationAgent3D_set_navigation_layers(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -4444,7 +5798,7 @@ static JSValue js_NavigationAgent3D_set_navigation_layers(JSContext *ctx, JSValu
 }
 
 static JSValue js_NavigationAgent3D_get_navigation_layers(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4453,7 +5807,7 @@ static JSValue js_NavigationAgent3D_get_navigation_layers(JSContext *ctx, JSValu
 }
 
 static JSValue js_NavigationAgent3D_set_navigation_layer_value(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -4466,7 +5820,7 @@ static JSValue js_NavigationAgent3D_set_navigation_layer_value(JSContext *ctx, J
 }
 
 static JSValue js_NavigationAgent3D_get_navigation_layer_value(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -4477,8 +5831,71 @@ static JSValue js_NavigationAgent3D_get_navigation_layer_value(JSContext *ctx, J
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_NavigationAgent3D_set_pathfinding_algorithm(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_pathfinding_algorithm", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_NavigationAgent3D_get_pathfinding_algorithm(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_pathfinding_algorithm", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_NavigationAgent3D_set_path_postprocessing(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_path_postprocessing", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_NavigationAgent3D_get_path_postprocessing(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_path_postprocessing", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_NavigationAgent3D_set_path_metadata_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_path_metadata_flags", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_NavigationAgent3D_get_path_metadata_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_path_metadata_flags", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_NavigationAgent3D_set_simplify_path(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -4490,7 +5907,7 @@ static JSValue js_NavigationAgent3D_set_simplify_path(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_NavigationAgent3D_get_simplify_path(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4499,7 +5916,7 @@ static JSValue js_NavigationAgent3D_get_simplify_path(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_NavigationAgent3D_set_simplify_epsilon(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -4511,7 +5928,7 @@ static JSValue js_NavigationAgent3D_set_simplify_epsilon(JSContext *ctx, JSValue
 }
 
 static JSValue js_NavigationAgent3D_get_simplify_epsilon(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4520,7 +5937,7 @@ static JSValue js_NavigationAgent3D_get_simplify_epsilon(JSContext *ctx, JSValue
 }
 
 static JSValue js_NavigationAgent3D_distance_to_target(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4529,7 +5946,7 @@ static JSValue js_NavigationAgent3D_distance_to_target(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_NavigationAgent3D_get_current_navigation_path_index(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4538,7 +5955,7 @@ static JSValue js_NavigationAgent3D_get_current_navigation_path_index(JSContext 
 }
 
 static JSValue js_NavigationAgent3D_is_target_reached(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4547,7 +5964,7 @@ static JSValue js_NavigationAgent3D_is_target_reached(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_NavigationAgent3D_is_target_reachable(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4556,7 +5973,7 @@ static JSValue js_NavigationAgent3D_is_target_reachable(JSContext *ctx, JSValueC
 }
 
 static JSValue js_NavigationAgent3D_is_navigation_finished(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4565,7 +5982,7 @@ static JSValue js_NavigationAgent3D_is_navigation_finished(JSContext *ctx, JSVal
 }
 
 static JSValue js_NavigationAgent3D_set_avoidance_layers(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -4577,7 +5994,7 @@ static JSValue js_NavigationAgent3D_set_avoidance_layers(JSContext *ctx, JSValue
 }
 
 static JSValue js_NavigationAgent3D_get_avoidance_layers(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4586,7 +6003,7 @@ static JSValue js_NavigationAgent3D_get_avoidance_layers(JSContext *ctx, JSValue
 }
 
 static JSValue js_NavigationAgent3D_set_avoidance_mask(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -4598,7 +6015,7 @@ static JSValue js_NavigationAgent3D_set_avoidance_mask(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_NavigationAgent3D_get_avoidance_mask(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4607,7 +6024,7 @@ static JSValue js_NavigationAgent3D_get_avoidance_mask(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_NavigationAgent3D_set_avoidance_layer_value(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -4620,7 +6037,7 @@ static JSValue js_NavigationAgent3D_set_avoidance_layer_value(JSContext *ctx, JS
 }
 
 static JSValue js_NavigationAgent3D_get_avoidance_layer_value(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -4632,7 +6049,7 @@ static JSValue js_NavigationAgent3D_get_avoidance_layer_value(JSContext *ctx, JS
 }
 
 static JSValue js_NavigationAgent3D_set_avoidance_mask_value(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -4645,7 +6062,7 @@ static JSValue js_NavigationAgent3D_set_avoidance_mask_value(JSContext *ctx, JSV
 }
 
 static JSValue js_NavigationAgent3D_get_avoidance_mask_value(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -4657,7 +6074,7 @@ static JSValue js_NavigationAgent3D_get_avoidance_mask_value(JSContext *ctx, JSV
 }
 
 static JSValue js_NavigationAgent3D_set_avoidance_priority(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -4669,7 +6086,7 @@ static JSValue js_NavigationAgent3D_set_avoidance_priority(JSContext *ctx, JSVal
 }
 
 static JSValue js_NavigationAgent3D_get_avoidance_priority(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4678,7 +6095,7 @@ static JSValue js_NavigationAgent3D_get_avoidance_priority(JSContext *ctx, JSVal
 }
 
 static JSValue js_NavigationAgent3D_set_debug_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -4690,7 +6107,7 @@ static JSValue js_NavigationAgent3D_set_debug_enabled(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_NavigationAgent3D_get_debug_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4699,7 +6116,7 @@ static JSValue js_NavigationAgent3D_get_debug_enabled(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_NavigationAgent3D_set_debug_use_custom(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -4711,7 +6128,7 @@ static JSValue js_NavigationAgent3D_set_debug_use_custom(JSContext *ctx, JSValue
 }
 
 static JSValue js_NavigationAgent3D_get_debug_use_custom(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4720,7 +6137,7 @@ static JSValue js_NavigationAgent3D_get_debug_use_custom(JSContext *ctx, JSValue
 }
 
 static JSValue js_NavigationAgent3D_set_debug_path_custom_point_size(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -4732,7 +6149,7 @@ static JSValue js_NavigationAgent3D_set_debug_path_custom_point_size(JSContext *
 }
 
 static JSValue js_NavigationAgent3D_get_debug_path_custom_point_size(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4740,8 +6157,18 @@ static JSValue js_NavigationAgent3D_get_debug_path_custom_point_size(JSContext *
     return JS_NewFloat64(ctx, (double)ret);
 }
 
-static void quickjs_register_NavigationAgent3D(JSContext *ctx, JSValue global) {
+static JSValue js_NavigationAgent3D_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("NavigationAgent3D");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_NavigationAgent3D(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_avoidance_enabled", JS_NewCFunction(ctx, js_NavigationAgent3D_set_avoidance_enabled, "set_avoidance_enabled", 1));
     JS_SetPropertyStr(ctx, proto, "get_avoidance_enabled", JS_NewCFunction(ctx, js_NavigationAgent3D_get_avoidance_enabled, "get_avoidance_enabled", 0));
     JS_SetPropertyStr(ctx, proto, "set_path_desired_distance", JS_NewCFunction(ctx, js_NavigationAgent3D_set_path_desired_distance, "set_path_desired_distance", 1));
@@ -4774,6 +6201,12 @@ static void quickjs_register_NavigationAgent3D(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "get_navigation_layers", JS_NewCFunction(ctx, js_NavigationAgent3D_get_navigation_layers, "get_navigation_layers", 0));
     JS_SetPropertyStr(ctx, proto, "set_navigation_layer_value", JS_NewCFunction(ctx, js_NavigationAgent3D_set_navigation_layer_value, "set_navigation_layer_value", 2));
     JS_SetPropertyStr(ctx, proto, "get_navigation_layer_value", JS_NewCFunction(ctx, js_NavigationAgent3D_get_navigation_layer_value, "get_navigation_layer_value", 1));
+    JS_SetPropertyStr(ctx, proto, "set_pathfinding_algorithm", JS_NewCFunction(ctx, js_NavigationAgent3D_set_pathfinding_algorithm, "set_pathfinding_algorithm", 1));
+    JS_SetPropertyStr(ctx, proto, "get_pathfinding_algorithm", JS_NewCFunction(ctx, js_NavigationAgent3D_get_pathfinding_algorithm, "get_pathfinding_algorithm", 0));
+    JS_SetPropertyStr(ctx, proto, "set_path_postprocessing", JS_NewCFunction(ctx, js_NavigationAgent3D_set_path_postprocessing, "set_path_postprocessing", 1));
+    JS_SetPropertyStr(ctx, proto, "get_path_postprocessing", JS_NewCFunction(ctx, js_NavigationAgent3D_get_path_postprocessing, "get_path_postprocessing", 0));
+    JS_SetPropertyStr(ctx, proto, "set_path_metadata_flags", JS_NewCFunction(ctx, js_NavigationAgent3D_set_path_metadata_flags, "set_path_metadata_flags", 1));
+    JS_SetPropertyStr(ctx, proto, "get_path_metadata_flags", JS_NewCFunction(ctx, js_NavigationAgent3D_get_path_metadata_flags, "get_path_metadata_flags", 0));
     JS_SetPropertyStr(ctx, proto, "set_simplify_path", JS_NewCFunction(ctx, js_NavigationAgent3D_set_simplify_path, "set_simplify_path", 1));
     JS_SetPropertyStr(ctx, proto, "get_simplify_path", JS_NewCFunction(ctx, js_NavigationAgent3D_get_simplify_path, "get_simplify_path", 0));
     JS_SetPropertyStr(ctx, proto, "set_simplify_epsilon", JS_NewCFunction(ctx, js_NavigationAgent3D_set_simplify_epsilon, "set_simplify_epsilon", 1));
@@ -4800,10 +6233,13 @@ static void quickjs_register_NavigationAgent3D(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "set_debug_path_custom_point_size", JS_NewCFunction(ctx, js_NavigationAgent3D_set_debug_path_custom_point_size, "set_debug_path_custom_point_size", 1));
     JS_SetPropertyStr(ctx, proto, "get_debug_path_custom_point_size", JS_NewCFunction(ctx, js_NavigationAgent3D_get_debug_path_custom_point_size, "get_debug_path_custom_point_size", 0));
     JS_SetPropertyStr(ctx, global, "_NavigationAgent3D_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_NavigationAgent3D_constructor, "NavigationAgent3D", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "NavigationAgent3D", ctor);
 }
 
 static JSValue js_NavigationRegion3D_set_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -4815,7 +6251,7 @@ static JSValue js_NavigationRegion3D_set_enabled(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_NavigationRegion3D_is_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4824,7 +6260,7 @@ static JSValue js_NavigationRegion3D_is_enabled(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_NavigationRegion3D_set_use_edge_connections(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -4836,7 +6272,7 @@ static JSValue js_NavigationRegion3D_set_use_edge_connections(JSContext *ctx, JS
 }
 
 static JSValue js_NavigationRegion3D_get_use_edge_connections(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4845,7 +6281,7 @@ static JSValue js_NavigationRegion3D_get_use_edge_connections(JSContext *ctx, JS
 }
 
 static JSValue js_NavigationRegion3D_set_navigation_layers(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -4857,7 +6293,7 @@ static JSValue js_NavigationRegion3D_set_navigation_layers(JSContext *ctx, JSVal
 }
 
 static JSValue js_NavigationRegion3D_get_navigation_layers(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4866,7 +6302,7 @@ static JSValue js_NavigationRegion3D_get_navigation_layers(JSContext *ctx, JSVal
 }
 
 static JSValue js_NavigationRegion3D_set_navigation_layer_value(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -4879,7 +6315,7 @@ static JSValue js_NavigationRegion3D_set_navigation_layer_value(JSContext *ctx, 
 }
 
 static JSValue js_NavigationRegion3D_get_navigation_layer_value(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -4891,7 +6327,7 @@ static JSValue js_NavigationRegion3D_get_navigation_layer_value(JSContext *ctx, 
 }
 
 static JSValue js_NavigationRegion3D_set_enter_cost(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -4903,7 +6339,7 @@ static JSValue js_NavigationRegion3D_set_enter_cost(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_NavigationRegion3D_get_enter_cost(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4912,7 +6348,7 @@ static JSValue js_NavigationRegion3D_get_enter_cost(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_NavigationRegion3D_set_travel_cost(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -4924,7 +6360,7 @@ static JSValue js_NavigationRegion3D_set_travel_cost(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_NavigationRegion3D_get_travel_cost(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4933,7 +6369,7 @@ static JSValue js_NavigationRegion3D_get_travel_cost(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_NavigationRegion3D_bake_navigation_mesh(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -4945,7 +6381,7 @@ static JSValue js_NavigationRegion3D_bake_navigation_mesh(JSContext *ctx, JSValu
 }
 
 static JSValue js_NavigationRegion3D_is_baking(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4953,8 +6389,18 @@ static JSValue js_NavigationRegion3D_is_baking(JSContext *ctx, JSValueConst this
     return JS_NewBool(ctx, (bool)ret);
 }
 
-static void quickjs_register_NavigationRegion3D(JSContext *ctx, JSValue global) {
+static JSValue js_NavigationRegion3D_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("NavigationRegion3D");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_NavigationRegion3D(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node3D_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_enabled", JS_NewCFunction(ctx, js_NavigationRegion3D_set_enabled, "set_enabled", 1));
     JS_SetPropertyStr(ctx, proto, "is_enabled", JS_NewCFunction(ctx, js_NavigationRegion3D_is_enabled, "is_enabled", 0));
     JS_SetPropertyStr(ctx, proto, "set_use_edge_connections", JS_NewCFunction(ctx, js_NavigationRegion3D_set_use_edge_connections, "set_use_edge_connections", 1));
@@ -4970,10 +6416,13 @@ static void quickjs_register_NavigationRegion3D(JSContext *ctx, JSValue global) 
     JS_SetPropertyStr(ctx, proto, "bake_navigation_mesh", JS_NewCFunction(ctx, js_NavigationRegion3D_bake_navigation_mesh, "bake_navigation_mesh", 1));
     JS_SetPropertyStr(ctx, proto, "is_baking", JS_NewCFunction(ctx, js_NavigationRegion3D_is_baking, "is_baking", 0));
     JS_SetPropertyStr(ctx, global, "_NavigationRegion3D_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_NavigationRegion3D_constructor, "NavigationRegion3D", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "NavigationRegion3D", ctor);
 }
 
 static JSValue js_Timer_set_wait_time(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -4985,7 +6434,7 @@ static JSValue js_Timer_set_wait_time(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Timer_get_wait_time(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -4994,7 +6443,7 @@ static JSValue js_Timer_get_wait_time(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Timer_set_one_shot(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -5006,7 +6455,7 @@ static JSValue js_Timer_set_one_shot(JSContext *ctx, JSValueConst this_val, int 
 }
 
 static JSValue js_Timer_is_one_shot(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5015,7 +6464,7 @@ static JSValue js_Timer_is_one_shot(JSContext *ctx, JSValueConst this_val, int a
 }
 
 static JSValue js_Timer_set_autostart(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -5027,7 +6476,7 @@ static JSValue js_Timer_set_autostart(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Timer_has_autostart(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5036,7 +6485,7 @@ static JSValue js_Timer_has_autostart(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Timer_start(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -5048,7 +6497,7 @@ static JSValue js_Timer_start(JSContext *ctx, JSValueConst this_val, int argc, J
 }
 
 static JSValue js_Timer_stop(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5057,7 +6506,7 @@ static JSValue js_Timer_stop(JSContext *ctx, JSValueConst this_val, int argc, JS
 }
 
 static JSValue js_Timer_set_paused(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -5069,7 +6518,7 @@ static JSValue js_Timer_set_paused(JSContext *ctx, JSValueConst this_val, int ar
 }
 
 static JSValue js_Timer_is_paused(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5078,7 +6527,7 @@ static JSValue js_Timer_is_paused(JSContext *ctx, JSValueConst this_val, int arg
 }
 
 static JSValue js_Timer_set_ignore_time_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -5090,7 +6539,7 @@ static JSValue js_Timer_set_ignore_time_scale(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Timer_is_ignoring_time_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5099,7 +6548,7 @@ static JSValue js_Timer_is_ignoring_time_scale(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_Timer_is_stopped(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5108,7 +6557,7 @@ static JSValue js_Timer_is_stopped(JSContext *ctx, JSValueConst this_val, int ar
 }
 
 static JSValue js_Timer_get_time_left(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5116,8 +6565,39 @@ static JSValue js_Timer_get_time_left(JSContext *ctx, JSValueConst this_val, int
     return JS_NewFloat64(ctx, (double)ret);
 }
 
-static void quickjs_register_Timer(JSContext *ctx, JSValue global) {
+static JSValue js_Timer_set_timer_process_callback(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_timer_process_callback", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Timer_get_timer_process_callback(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_timer_process_callback", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Timer_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("Timer");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_Timer(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_wait_time", JS_NewCFunction(ctx, js_Timer_set_wait_time, "set_wait_time", 1));
     JS_SetPropertyStr(ctx, proto, "get_wait_time", JS_NewCFunction(ctx, js_Timer_get_wait_time, "get_wait_time", 0));
     JS_SetPropertyStr(ctx, proto, "set_one_shot", JS_NewCFunction(ctx, js_Timer_set_one_shot, "set_one_shot", 1));
@@ -5132,11 +6612,16 @@ static void quickjs_register_Timer(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "is_ignoring_time_scale", JS_NewCFunction(ctx, js_Timer_is_ignoring_time_scale, "is_ignoring_time_scale", 0));
     JS_SetPropertyStr(ctx, proto, "is_stopped", JS_NewCFunction(ctx, js_Timer_is_stopped, "is_stopped", 0));
     JS_SetPropertyStr(ctx, proto, "get_time_left", JS_NewCFunction(ctx, js_Timer_get_time_left, "get_time_left", 0));
+    JS_SetPropertyStr(ctx, proto, "set_timer_process_callback", JS_NewCFunction(ctx, js_Timer_set_timer_process_callback, "set_timer_process_callback", 1));
+    JS_SetPropertyStr(ctx, proto, "get_timer_process_callback", JS_NewCFunction(ctx, js_Timer_get_timer_process_callback, "get_timer_process_callback", 0));
     JS_SetPropertyStr(ctx, global, "_Timer_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_Timer_constructor, "Timer", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "Timer", ctor);
 }
 
 static JSValue js_RayCast3D_set_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -5148,7 +6633,7 @@ static JSValue js_RayCast3D_set_enabled(JSContext *ctx, JSValueConst this_val, i
 }
 
 static JSValue js_RayCast3D_is_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5157,7 +6642,7 @@ static JSValue js_RayCast3D_is_enabled(JSContext *ctx, JSValueConst this_val, in
 }
 
 static JSValue js_RayCast3D_is_colliding(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5166,7 +6651,7 @@ static JSValue js_RayCast3D_is_colliding(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_RayCast3D_force_raycast_update(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5175,7 +6660,7 @@ static JSValue js_RayCast3D_force_raycast_update(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_RayCast3D_get_collider_shape(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5184,7 +6669,7 @@ static JSValue js_RayCast3D_get_collider_shape(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_RayCast3D_get_collision_face_index(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5193,7 +6678,7 @@ static JSValue js_RayCast3D_get_collision_face_index(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_RayCast3D_clear_exceptions(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5202,7 +6687,7 @@ static JSValue js_RayCast3D_clear_exceptions(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_RayCast3D_set_collision_mask(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -5214,7 +6699,7 @@ static JSValue js_RayCast3D_set_collision_mask(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_RayCast3D_get_collision_mask(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5223,7 +6708,7 @@ static JSValue js_RayCast3D_get_collision_mask(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_RayCast3D_set_collision_mask_value(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -5236,7 +6721,7 @@ static JSValue js_RayCast3D_set_collision_mask_value(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_RayCast3D_get_collision_mask_value(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -5248,7 +6733,7 @@ static JSValue js_RayCast3D_get_collision_mask_value(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_RayCast3D_set_exclude_parent_body(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -5260,7 +6745,7 @@ static JSValue js_RayCast3D_set_exclude_parent_body(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_RayCast3D_get_exclude_parent_body(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5269,7 +6754,7 @@ static JSValue js_RayCast3D_get_exclude_parent_body(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_RayCast3D_set_collide_with_areas(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -5281,7 +6766,7 @@ static JSValue js_RayCast3D_set_collide_with_areas(JSContext *ctx, JSValueConst 
 }
 
 static JSValue js_RayCast3D_is_collide_with_areas_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5290,7 +6775,7 @@ static JSValue js_RayCast3D_is_collide_with_areas_enabled(JSContext *ctx, JSValu
 }
 
 static JSValue js_RayCast3D_set_collide_with_bodies(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -5302,7 +6787,7 @@ static JSValue js_RayCast3D_set_collide_with_bodies(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_RayCast3D_is_collide_with_bodies_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5311,7 +6796,7 @@ static JSValue js_RayCast3D_is_collide_with_bodies_enabled(JSContext *ctx, JSVal
 }
 
 static JSValue js_RayCast3D_set_hit_from_inside(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -5323,7 +6808,7 @@ static JSValue js_RayCast3D_set_hit_from_inside(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_RayCast3D_is_hit_from_inside_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5332,7 +6817,7 @@ static JSValue js_RayCast3D_is_hit_from_inside_enabled(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_RayCast3D_set_hit_back_faces(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -5344,7 +6829,7 @@ static JSValue js_RayCast3D_set_hit_back_faces(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_RayCast3D_is_hit_back_faces_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5353,7 +6838,7 @@ static JSValue js_RayCast3D_is_hit_back_faces_enabled(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_RayCast3D_set_debug_shape_thickness(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -5365,7 +6850,7 @@ static JSValue js_RayCast3D_set_debug_shape_thickness(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_RayCast3D_get_debug_shape_thickness(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5373,8 +6858,18 @@ static JSValue js_RayCast3D_get_debug_shape_thickness(JSContext *ctx, JSValueCon
     return JS_NewInt64(ctx, (int64_t)ret);
 }
 
-static void quickjs_register_RayCast3D(JSContext *ctx, JSValue global) {
+static JSValue js_RayCast3D_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("RayCast3D");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_RayCast3D(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node3D_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_enabled", JS_NewCFunction(ctx, js_RayCast3D_set_enabled, "set_enabled", 1));
     JS_SetPropertyStr(ctx, proto, "is_enabled", JS_NewCFunction(ctx, js_RayCast3D_is_enabled, "is_enabled", 0));
     JS_SetPropertyStr(ctx, proto, "is_colliding", JS_NewCFunction(ctx, js_RayCast3D_is_colliding, "is_colliding", 0));
@@ -5399,10 +6894,13 @@ static void quickjs_register_RayCast3D(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "set_debug_shape_thickness", JS_NewCFunction(ctx, js_RayCast3D_set_debug_shape_thickness, "set_debug_shape_thickness", 1));
     JS_SetPropertyStr(ctx, proto, "get_debug_shape_thickness", JS_NewCFunction(ctx, js_RayCast3D_get_debug_shape_thickness, "get_debug_shape_thickness", 0));
     JS_SetPropertyStr(ctx, global, "_RayCast3D_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_RayCast3D_constructor, "RayCast3D", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "RayCast3D", ctor);
 }
 
 static JSValue js_Control_accept_event(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5410,8 +6908,116 @@ static JSValue js_Control_accept_event(JSContext *ctx, JSValueConst this_val, in
     return JS_UNDEFINED;
 }
 
+static JSValue js_Control_set_anchors_preset(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    bool arg1 = JS_ToBool(ctx, argv[1]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1) };
+    const Variant *argptrs[] = { &args[0], &args[1] };
+    obj->callp("set_anchors_preset", argptrs, 2, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Control_set_offsets_preset(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    int64_t arg1 = js_to_int(ctx, argv[1]);
+    int64_t arg2 = js_to_int(ctx, argv[2]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1), Variant(arg2) };
+    const Variant *argptrs[] = { &args[0], &args[1], &args[2] };
+    obj->callp("set_offsets_preset", argptrs, 3, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Control_set_anchors_and_offsets_preset(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    int64_t arg1 = js_to_int(ctx, argv[1]);
+    int64_t arg2 = js_to_int(ctx, argv[2]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1), Variant(arg2) };
+    const Variant *argptrs[] = { &args[0], &args[1], &args[2] };
+    obj->callp("set_anchors_and_offsets_preset", argptrs, 3, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Control_set_anchor(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    double arg1 = js_to_float(ctx, argv[1]);
+    bool arg2 = JS_ToBool(ctx, argv[2]);
+    bool arg3 = JS_ToBool(ctx, argv[3]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1), Variant(arg2), Variant(arg3) };
+    const Variant *argptrs[] = { &args[0], &args[1], &args[2], &args[3] };
+    obj->callp("set_anchor", argptrs, 4, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Control_get_anchor(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    Variant ret = obj->callp("get_anchor", argptrs, 1, ce);
+    return JS_NewFloat64(ctx, (double)ret);
+}
+
+static JSValue js_Control_set_offset(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    double arg1 = js_to_float(ctx, argv[1]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1) };
+    const Variant *argptrs[] = { &args[0], &args[1] };
+    obj->callp("set_offset", argptrs, 2, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Control_get_offset(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    Variant ret = obj->callp("get_offset", argptrs, 1, ce);
+    return JS_NewFloat64(ctx, (double)ret);
+}
+
+static JSValue js_Control_set_anchor_and_offset(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    double arg1 = js_to_float(ctx, argv[1]);
+    double arg2 = js_to_float(ctx, argv[2]);
+    bool arg3 = JS_ToBool(ctx, argv[3]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1), Variant(arg2), Variant(arg3) };
+    const Variant *argptrs[] = { &args[0], &args[1], &args[2], &args[3] };
+    obj->callp("set_anchor_and_offset", argptrs, 4, ce);
+    return JS_UNDEFINED;
+}
+
 static JSValue js_Control_reset_size(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5420,7 +7026,7 @@ static JSValue js_Control_reset_size(JSContext *ctx, JSValueConst this_val, int 
 }
 
 static JSValue js_Control_set_rotation(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -5432,7 +7038,7 @@ static JSValue js_Control_set_rotation(JSContext *ctx, JSValueConst this_val, in
 }
 
 static JSValue js_Control_set_rotation_degrees(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -5444,7 +7050,7 @@ static JSValue js_Control_set_rotation_degrees(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_Control_get_rotation(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5453,7 +7059,7 @@ static JSValue js_Control_get_rotation(JSContext *ctx, JSValueConst this_val, in
 }
 
 static JSValue js_Control_get_rotation_degrees(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5461,8 +7067,29 @@ static JSValue js_Control_get_rotation_degrees(JSContext *ctx, JSValueConst this
     return JS_NewFloat64(ctx, (double)ret);
 }
 
+static JSValue js_Control_set_focus_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_focus_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Control_get_focus_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_focus_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Control_has_focus(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5471,7 +7098,7 @@ static JSValue js_Control_has_focus(JSContext *ctx, JSValueConst this_val, int a
 }
 
 static JSValue js_Control_grab_focus(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5480,7 +7107,7 @@ static JSValue js_Control_grab_focus(JSContext *ctx, JSValueConst this_val, int 
 }
 
 static JSValue js_Control_release_focus(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5488,8 +7115,62 @@ static JSValue js_Control_release_focus(JSContext *ctx, JSValueConst this_val, i
     return JS_UNDEFINED;
 }
 
+static JSValue js_Control_find_prev_valid_focus(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("find_prev_valid_focus", nullptr, 0, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
+static JSValue js_Control_find_next_valid_focus(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("find_next_valid_focus", nullptr, 0, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
+static JSValue js_Control_find_valid_focus_neighbor(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    Variant ret = obj->callp("find_valid_focus_neighbor", argptrs, 1, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
+static JSValue js_Control_set_h_size_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_h_size_flags", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Control_get_h_size_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_h_size_flags", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Control_set_stretch_ratio(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -5501,7 +7182,7 @@ static JSValue js_Control_set_stretch_ratio(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_Control_get_stretch_ratio(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5509,8 +7190,29 @@ static JSValue js_Control_get_stretch_ratio(JSContext *ctx, JSValueConst this_va
     return JS_NewFloat64(ctx, (double)ret);
 }
 
+static JSValue js_Control_set_v_size_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_v_size_flags", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Control_get_v_size_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_v_size_flags", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Control_set_theme_type_variation(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5522,7 +7224,7 @@ static JSValue js_Control_set_theme_type_variation(JSContext *ctx, JSValueConst 
 }
 
 static JSValue js_Control_get_theme_type_variation(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5531,7 +7233,7 @@ static JSValue js_Control_get_theme_type_variation(JSContext *ctx, JSValueConst 
 }
 
 static JSValue js_Control_begin_bulk_theme_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5540,7 +7242,7 @@ static JSValue js_Control_begin_bulk_theme_override(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_Control_end_bulk_theme_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5549,7 +7251,7 @@ static JSValue js_Control_end_bulk_theme_override(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_Control_add_theme_font_size_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5562,7 +7264,7 @@ static JSValue js_Control_add_theme_font_size_override(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_Control_add_theme_constant_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5575,7 +7277,7 @@ static JSValue js_Control_add_theme_constant_override(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_Control_remove_theme_icon_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5587,7 +7289,7 @@ static JSValue js_Control_remove_theme_icon_override(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_Control_remove_theme_stylebox_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5599,7 +7301,7 @@ static JSValue js_Control_remove_theme_stylebox_override(JSContext *ctx, JSValue
 }
 
 static JSValue js_Control_remove_theme_font_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5611,7 +7313,7 @@ static JSValue js_Control_remove_theme_font_override(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_Control_remove_theme_font_size_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5623,7 +7325,7 @@ static JSValue js_Control_remove_theme_font_size_override(JSContext *ctx, JSValu
 }
 
 static JSValue js_Control_remove_theme_color_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5635,7 +7337,7 @@ static JSValue js_Control_remove_theme_color_override(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_Control_remove_theme_constant_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5647,7 +7349,7 @@ static JSValue js_Control_remove_theme_constant_override(JSContext *ctx, JSValue
 }
 
 static JSValue js_Control_get_theme_font_size(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5660,7 +7362,7 @@ static JSValue js_Control_get_theme_font_size(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Control_get_theme_constant(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5673,7 +7375,7 @@ static JSValue js_Control_get_theme_constant(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Control_has_theme_icon_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5685,7 +7387,7 @@ static JSValue js_Control_has_theme_icon_override(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_Control_has_theme_stylebox_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5697,7 +7399,7 @@ static JSValue js_Control_has_theme_stylebox_override(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_Control_has_theme_font_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5709,7 +7411,7 @@ static JSValue js_Control_has_theme_font_override(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_Control_has_theme_font_size_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5721,7 +7423,7 @@ static JSValue js_Control_has_theme_font_size_override(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_Control_has_theme_color_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5733,7 +7435,7 @@ static JSValue js_Control_has_theme_color_override(JSContext *ctx, JSValueConst 
 }
 
 static JSValue js_Control_has_theme_constant_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5745,7 +7447,7 @@ static JSValue js_Control_has_theme_constant_override(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_Control_has_theme_icon(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5758,7 +7460,7 @@ static JSValue js_Control_has_theme_icon(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_Control_has_theme_stylebox(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5771,7 +7473,7 @@ static JSValue js_Control_has_theme_stylebox(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Control_has_theme_font(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5784,7 +7486,7 @@ static JSValue js_Control_has_theme_font(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_Control_has_theme_font_size(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5797,7 +7499,7 @@ static JSValue js_Control_has_theme_font_size(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Control_has_theme_color(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5810,7 +7512,7 @@ static JSValue js_Control_has_theme_color(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_Control_has_theme_constant(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -5823,7 +7525,7 @@ static JSValue js_Control_has_theme_constant(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Control_get_theme_default_base_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5832,7 +7534,7 @@ static JSValue js_Control_get_theme_default_base_scale(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_Control_get_theme_default_font_size(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5840,8 +7542,81 @@ static JSValue js_Control_get_theme_default_font_size(JSContext *ctx, JSValueCon
     return JS_NewInt64(ctx, (int64_t)ret);
 }
 
+static JSValue js_Control_get_parent_control(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_parent_control", nullptr, 0, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
+static JSValue js_Control_set_h_grow_direction(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_h_grow_direction", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Control_get_h_grow_direction(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_h_grow_direction", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Control_set_v_grow_direction(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_v_grow_direction", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Control_get_v_grow_direction(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_v_grow_direction", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Control_set_tooltip_auto_translate_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_tooltip_auto_translate_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Control_get_tooltip_auto_translate_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_tooltip_auto_translate_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Control_set_tooltip_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = js_to_string(ctx, argv[0]);
@@ -5853,7 +7628,7 @@ static JSValue js_Control_set_tooltip_text(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_Control_get_tooltip_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5861,8 +7636,54 @@ static JSValue js_Control_get_tooltip_text(JSContext *ctx, JSValueConst this_val
     return string_to_js(ctx, (String)ret);
 }
 
+static JSValue js_Control_set_default_cursor_shape(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_default_cursor_shape", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Control_get_default_cursor_shape(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_default_cursor_shape", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Control_set_focus_neighbor(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    String arg1 = NodePath(js_to_string(ctx, argv[1]));
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1) };
+    const Variant *argptrs[] = { &args[0], &args[1] };
+    obj->callp("set_focus_neighbor", argptrs, 2, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Control_get_focus_neighbor(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    Variant ret = obj->callp("get_focus_neighbor", argptrs, 1, ce);
+    return string_to_js(ctx, String((String)ret));
+}
+
 static JSValue js_Control_set_focus_next(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = NodePath(js_to_string(ctx, argv[0]));
@@ -5874,7 +7695,7 @@ static JSValue js_Control_set_focus_next(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_Control_get_focus_next(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5883,7 +7704,7 @@ static JSValue js_Control_get_focus_next(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_Control_set_focus_previous(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = NodePath(js_to_string(ctx, argv[0]));
@@ -5895,7 +7716,7 @@ static JSValue js_Control_set_focus_previous(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Control_get_focus_previous(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5903,8 +7724,29 @@ static JSValue js_Control_get_focus_previous(JSContext *ctx, JSValueConst this_v
     return string_to_js(ctx, String((String)ret));
 }
 
+static JSValue js_Control_set_mouse_filter(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_mouse_filter", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Control_get_mouse_filter(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_mouse_filter", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Control_set_force_pass_scroll_events(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -5916,7 +7758,7 @@ static JSValue js_Control_set_force_pass_scroll_events(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_Control_is_force_pass_scroll_events(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5925,7 +7767,7 @@ static JSValue js_Control_is_force_pass_scroll_events(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_Control_set_clip_contents(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -5937,7 +7779,7 @@ static JSValue js_Control_set_clip_contents(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_Control_is_clipping_contents(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5946,7 +7788,7 @@ static JSValue js_Control_is_clipping_contents(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_Control_grab_click_focus(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5954,8 +7796,20 @@ static JSValue js_Control_grab_click_focus(JSContext *ctx, JSValueConst this_val
     return JS_UNDEFINED;
 }
 
+static JSValue js_Control_set_drag_preview(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_drag_preview", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
 static JSValue js_Control_is_drag_successful(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5963,8 +7817,30 @@ static JSValue js_Control_is_drag_successful(JSContext *ctx, JSValueConst this_v
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Control_set_shortcut_context(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_shortcut_context", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Control_get_shortcut_context(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_shortcut_context", nullptr, 0, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
 static JSValue js_Control_update_minimum_size(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5972,8 +7848,29 @@ static JSValue js_Control_update_minimum_size(JSContext *ctx, JSValueConst this_
     return JS_UNDEFINED;
 }
 
+static JSValue js_Control_set_layout_direction(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_layout_direction", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Control_get_layout_direction(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_layout_direction", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Control_is_layout_rtl(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -5982,7 +7879,7 @@ static JSValue js_Control_is_layout_rtl(JSContext *ctx, JSValueConst this_val, i
 }
 
 static JSValue js_Control_set_auto_translate(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -5994,7 +7891,7 @@ static JSValue js_Control_set_auto_translate(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Control_is_auto_translating(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6003,7 +7900,7 @@ static JSValue js_Control_is_auto_translating(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Control_set_localize_numeral_system(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6015,7 +7912,7 @@ static JSValue js_Control_set_localize_numeral_system(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_Control_is_localizing_numeral_system(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6023,19 +7920,46 @@ static JSValue js_Control_is_localizing_numeral_system(JSContext *ctx, JSValueCo
     return JS_NewBool(ctx, (bool)ret);
 }
 
-static void quickjs_register_Control(JSContext *ctx, JSValue global) {
+static JSValue js_Control_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("Control");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_Control(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "accept_event", JS_NewCFunction(ctx, js_Control_accept_event, "accept_event", 0));
+    JS_SetPropertyStr(ctx, proto, "set_anchors_preset", JS_NewCFunction(ctx, js_Control_set_anchors_preset, "set_anchors_preset", 2));
+    JS_SetPropertyStr(ctx, proto, "set_offsets_preset", JS_NewCFunction(ctx, js_Control_set_offsets_preset, "set_offsets_preset", 3));
+    JS_SetPropertyStr(ctx, proto, "set_anchors_and_offsets_preset", JS_NewCFunction(ctx, js_Control_set_anchors_and_offsets_preset, "set_anchors_and_offsets_preset", 3));
+    JS_SetPropertyStr(ctx, proto, "set_anchor", JS_NewCFunction(ctx, js_Control_set_anchor, "set_anchor", 4));
+    JS_SetPropertyStr(ctx, proto, "get_anchor", JS_NewCFunction(ctx, js_Control_get_anchor, "get_anchor", 1));
+    JS_SetPropertyStr(ctx, proto, "set_offset", JS_NewCFunction(ctx, js_Control_set_offset, "set_offset", 2));
+    JS_SetPropertyStr(ctx, proto, "get_offset", JS_NewCFunction(ctx, js_Control_get_offset, "get_offset", 1));
+    JS_SetPropertyStr(ctx, proto, "set_anchor_and_offset", JS_NewCFunction(ctx, js_Control_set_anchor_and_offset, "set_anchor_and_offset", 4));
     JS_SetPropertyStr(ctx, proto, "reset_size", JS_NewCFunction(ctx, js_Control_reset_size, "reset_size", 0));
     JS_SetPropertyStr(ctx, proto, "set_rotation", JS_NewCFunction(ctx, js_Control_set_rotation, "set_rotation", 1));
     JS_SetPropertyStr(ctx, proto, "set_rotation_degrees", JS_NewCFunction(ctx, js_Control_set_rotation_degrees, "set_rotation_degrees", 1));
     JS_SetPropertyStr(ctx, proto, "get_rotation", JS_NewCFunction(ctx, js_Control_get_rotation, "get_rotation", 0));
     JS_SetPropertyStr(ctx, proto, "get_rotation_degrees", JS_NewCFunction(ctx, js_Control_get_rotation_degrees, "get_rotation_degrees", 0));
+    JS_SetPropertyStr(ctx, proto, "set_focus_mode", JS_NewCFunction(ctx, js_Control_set_focus_mode, "set_focus_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_focus_mode", JS_NewCFunction(ctx, js_Control_get_focus_mode, "get_focus_mode", 0));
     JS_SetPropertyStr(ctx, proto, "has_focus", JS_NewCFunction(ctx, js_Control_has_focus, "has_focus", 0));
     JS_SetPropertyStr(ctx, proto, "grab_focus", JS_NewCFunction(ctx, js_Control_grab_focus, "grab_focus", 0));
     JS_SetPropertyStr(ctx, proto, "release_focus", JS_NewCFunction(ctx, js_Control_release_focus, "release_focus", 0));
+    JS_SetPropertyStr(ctx, proto, "find_prev_valid_focus", JS_NewCFunction(ctx, js_Control_find_prev_valid_focus, "find_prev_valid_focus", 0));
+    JS_SetPropertyStr(ctx, proto, "find_next_valid_focus", JS_NewCFunction(ctx, js_Control_find_next_valid_focus, "find_next_valid_focus", 0));
+    JS_SetPropertyStr(ctx, proto, "find_valid_focus_neighbor", JS_NewCFunction(ctx, js_Control_find_valid_focus_neighbor, "find_valid_focus_neighbor", 1));
+    JS_SetPropertyStr(ctx, proto, "set_h_size_flags", JS_NewCFunction(ctx, js_Control_set_h_size_flags, "set_h_size_flags", 1));
+    JS_SetPropertyStr(ctx, proto, "get_h_size_flags", JS_NewCFunction(ctx, js_Control_get_h_size_flags, "get_h_size_flags", 0));
     JS_SetPropertyStr(ctx, proto, "set_stretch_ratio", JS_NewCFunction(ctx, js_Control_set_stretch_ratio, "set_stretch_ratio", 1));
     JS_SetPropertyStr(ctx, proto, "get_stretch_ratio", JS_NewCFunction(ctx, js_Control_get_stretch_ratio, "get_stretch_ratio", 0));
+    JS_SetPropertyStr(ctx, proto, "set_v_size_flags", JS_NewCFunction(ctx, js_Control_set_v_size_flags, "set_v_size_flags", 1));
+    JS_SetPropertyStr(ctx, proto, "get_v_size_flags", JS_NewCFunction(ctx, js_Control_get_v_size_flags, "get_v_size_flags", 0));
     JS_SetPropertyStr(ctx, proto, "set_theme_type_variation", JS_NewCFunction(ctx, js_Control_set_theme_type_variation, "set_theme_type_variation", 1));
     JS_SetPropertyStr(ctx, proto, "get_theme_type_variation", JS_NewCFunction(ctx, js_Control_get_theme_type_variation, "get_theme_type_variation", 0));
     JS_SetPropertyStr(ctx, proto, "begin_bulk_theme_override", JS_NewCFunction(ctx, js_Control_begin_bulk_theme_override, "begin_bulk_theme_override", 0));
@@ -6064,29 +7988,92 @@ static void quickjs_register_Control(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "has_theme_constant", JS_NewCFunction(ctx, js_Control_has_theme_constant, "has_theme_constant", 2));
     JS_SetPropertyStr(ctx, proto, "get_theme_default_base_scale", JS_NewCFunction(ctx, js_Control_get_theme_default_base_scale, "get_theme_default_base_scale", 0));
     JS_SetPropertyStr(ctx, proto, "get_theme_default_font_size", JS_NewCFunction(ctx, js_Control_get_theme_default_font_size, "get_theme_default_font_size", 0));
+    JS_SetPropertyStr(ctx, proto, "get_parent_control", JS_NewCFunction(ctx, js_Control_get_parent_control, "get_parent_control", 0));
+    JS_SetPropertyStr(ctx, proto, "set_h_grow_direction", JS_NewCFunction(ctx, js_Control_set_h_grow_direction, "set_h_grow_direction", 1));
+    JS_SetPropertyStr(ctx, proto, "get_h_grow_direction", JS_NewCFunction(ctx, js_Control_get_h_grow_direction, "get_h_grow_direction", 0));
+    JS_SetPropertyStr(ctx, proto, "set_v_grow_direction", JS_NewCFunction(ctx, js_Control_set_v_grow_direction, "set_v_grow_direction", 1));
+    JS_SetPropertyStr(ctx, proto, "get_v_grow_direction", JS_NewCFunction(ctx, js_Control_get_v_grow_direction, "get_v_grow_direction", 0));
+    JS_SetPropertyStr(ctx, proto, "set_tooltip_auto_translate_mode", JS_NewCFunction(ctx, js_Control_set_tooltip_auto_translate_mode, "set_tooltip_auto_translate_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_tooltip_auto_translate_mode", JS_NewCFunction(ctx, js_Control_get_tooltip_auto_translate_mode, "get_tooltip_auto_translate_mode", 0));
     JS_SetPropertyStr(ctx, proto, "set_tooltip_text", JS_NewCFunction(ctx, js_Control_set_tooltip_text, "set_tooltip_text", 1));
     JS_SetPropertyStr(ctx, proto, "get_tooltip_text", JS_NewCFunction(ctx, js_Control_get_tooltip_text, "get_tooltip_text", 0));
+    JS_SetPropertyStr(ctx, proto, "set_default_cursor_shape", JS_NewCFunction(ctx, js_Control_set_default_cursor_shape, "set_default_cursor_shape", 1));
+    JS_SetPropertyStr(ctx, proto, "get_default_cursor_shape", JS_NewCFunction(ctx, js_Control_get_default_cursor_shape, "get_default_cursor_shape", 0));
+    JS_SetPropertyStr(ctx, proto, "set_focus_neighbor", JS_NewCFunction(ctx, js_Control_set_focus_neighbor, "set_focus_neighbor", 2));
+    JS_SetPropertyStr(ctx, proto, "get_focus_neighbor", JS_NewCFunction(ctx, js_Control_get_focus_neighbor, "get_focus_neighbor", 1));
     JS_SetPropertyStr(ctx, proto, "set_focus_next", JS_NewCFunction(ctx, js_Control_set_focus_next, "set_focus_next", 1));
     JS_SetPropertyStr(ctx, proto, "get_focus_next", JS_NewCFunction(ctx, js_Control_get_focus_next, "get_focus_next", 0));
     JS_SetPropertyStr(ctx, proto, "set_focus_previous", JS_NewCFunction(ctx, js_Control_set_focus_previous, "set_focus_previous", 1));
     JS_SetPropertyStr(ctx, proto, "get_focus_previous", JS_NewCFunction(ctx, js_Control_get_focus_previous, "get_focus_previous", 0));
+    JS_SetPropertyStr(ctx, proto, "set_mouse_filter", JS_NewCFunction(ctx, js_Control_set_mouse_filter, "set_mouse_filter", 1));
+    JS_SetPropertyStr(ctx, proto, "get_mouse_filter", JS_NewCFunction(ctx, js_Control_get_mouse_filter, "get_mouse_filter", 0));
     JS_SetPropertyStr(ctx, proto, "set_force_pass_scroll_events", JS_NewCFunction(ctx, js_Control_set_force_pass_scroll_events, "set_force_pass_scroll_events", 1));
     JS_SetPropertyStr(ctx, proto, "is_force_pass_scroll_events", JS_NewCFunction(ctx, js_Control_is_force_pass_scroll_events, "is_force_pass_scroll_events", 0));
     JS_SetPropertyStr(ctx, proto, "set_clip_contents", JS_NewCFunction(ctx, js_Control_set_clip_contents, "set_clip_contents", 1));
     JS_SetPropertyStr(ctx, proto, "is_clipping_contents", JS_NewCFunction(ctx, js_Control_is_clipping_contents, "is_clipping_contents", 0));
     JS_SetPropertyStr(ctx, proto, "grab_click_focus", JS_NewCFunction(ctx, js_Control_grab_click_focus, "grab_click_focus", 0));
+    JS_SetPropertyStr(ctx, proto, "set_drag_preview", JS_NewCFunction(ctx, js_Control_set_drag_preview, "set_drag_preview", 1));
     JS_SetPropertyStr(ctx, proto, "is_drag_successful", JS_NewCFunction(ctx, js_Control_is_drag_successful, "is_drag_successful", 0));
+    JS_SetPropertyStr(ctx, proto, "set_shortcut_context", JS_NewCFunction(ctx, js_Control_set_shortcut_context, "set_shortcut_context", 1));
+    JS_SetPropertyStr(ctx, proto, "get_shortcut_context", JS_NewCFunction(ctx, js_Control_get_shortcut_context, "get_shortcut_context", 0));
     JS_SetPropertyStr(ctx, proto, "update_minimum_size", JS_NewCFunction(ctx, js_Control_update_minimum_size, "update_minimum_size", 0));
+    JS_SetPropertyStr(ctx, proto, "set_layout_direction", JS_NewCFunction(ctx, js_Control_set_layout_direction, "set_layout_direction", 1));
+    JS_SetPropertyStr(ctx, proto, "get_layout_direction", JS_NewCFunction(ctx, js_Control_get_layout_direction, "get_layout_direction", 0));
     JS_SetPropertyStr(ctx, proto, "is_layout_rtl", JS_NewCFunction(ctx, js_Control_is_layout_rtl, "is_layout_rtl", 0));
     JS_SetPropertyStr(ctx, proto, "set_auto_translate", JS_NewCFunction(ctx, js_Control_set_auto_translate, "set_auto_translate", 1));
     JS_SetPropertyStr(ctx, proto, "is_auto_translating", JS_NewCFunction(ctx, js_Control_is_auto_translating, "is_auto_translating", 0));
     JS_SetPropertyStr(ctx, proto, "set_localize_numeral_system", JS_NewCFunction(ctx, js_Control_set_localize_numeral_system, "set_localize_numeral_system", 1));
     JS_SetPropertyStr(ctx, proto, "is_localizing_numeral_system", JS_NewCFunction(ctx, js_Control_is_localizing_numeral_system, "is_localizing_numeral_system", 0));
     JS_SetPropertyStr(ctx, global, "_Control_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_Control_constructor, "Control", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "Control", ctor);
+}
+
+static JSValue js_Label_set_horizontal_alignment(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_horizontal_alignment", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Label_get_horizontal_alignment(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_horizontal_alignment", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Label_set_vertical_alignment(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_vertical_alignment", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Label_get_vertical_alignment(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_vertical_alignment", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
 }
 
 static JSValue js_Label_set_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = js_to_string(ctx, argv[0]);
@@ -6098,7 +8085,7 @@ static JSValue js_Label_set_text(JSContext *ctx, JSValueConst this_val, int argc
 }
 
 static JSValue js_Label_get_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6106,8 +8093,29 @@ static JSValue js_Label_get_text(JSContext *ctx, JSValueConst this_val, int argc
     return string_to_js(ctx, (String)ret);
 }
 
+static JSValue js_Label_set_text_direction(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_text_direction", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Label_get_text_direction(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_text_direction", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Label_set_language(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = js_to_string(ctx, argv[0]);
@@ -6119,7 +8127,7 @@ static JSValue js_Label_set_language(JSContext *ctx, JSValueConst this_val, int 
 }
 
 static JSValue js_Label_get_language(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6128,7 +8136,7 @@ static JSValue js_Label_get_language(JSContext *ctx, JSValueConst this_val, int 
 }
 
 static JSValue js_Label_set_paragraph_separator(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = js_to_string(ctx, argv[0]);
@@ -6140,7 +8148,7 @@ static JSValue js_Label_set_paragraph_separator(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_Label_get_paragraph_separator(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6148,8 +8156,50 @@ static JSValue js_Label_get_paragraph_separator(JSContext *ctx, JSValueConst thi
     return string_to_js(ctx, (String)ret);
 }
 
+static JSValue js_Label_set_autowrap_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_autowrap_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Label_get_autowrap_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_autowrap_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Label_set_justification_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_justification_flags", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Label_get_justification_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_justification_flags", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Label_set_clip_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6161,7 +8211,7 @@ static JSValue js_Label_set_clip_text(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Label_is_clipping_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6169,8 +8219,29 @@ static JSValue js_Label_is_clipping_text(JSContext *ctx, JSValueConst this_val, 
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Label_set_text_overrun_behavior(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_text_overrun_behavior", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Label_get_text_overrun_behavior(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_text_overrun_behavior", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Label_set_ellipsis_char(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = js_to_string(ctx, argv[0]);
@@ -6182,7 +8253,7 @@ static JSValue js_Label_set_ellipsis_char(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_Label_get_ellipsis_char(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6191,7 +8262,7 @@ static JSValue js_Label_get_ellipsis_char(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_Label_set_uppercase(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6203,7 +8274,7 @@ static JSValue js_Label_set_uppercase(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Label_is_uppercase(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6212,7 +8283,7 @@ static JSValue js_Label_is_uppercase(JSContext *ctx, JSValueConst this_val, int 
 }
 
 static JSValue js_Label_get_line_height(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -6224,7 +8295,7 @@ static JSValue js_Label_get_line_height(JSContext *ctx, JSValueConst this_val, i
 }
 
 static JSValue js_Label_get_line_count(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6233,7 +8304,7 @@ static JSValue js_Label_get_line_count(JSContext *ctx, JSValueConst this_val, in
 }
 
 static JSValue js_Label_get_visible_line_count(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6242,7 +8313,7 @@ static JSValue js_Label_get_visible_line_count(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_Label_get_total_character_count(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6251,7 +8322,7 @@ static JSValue js_Label_get_total_character_count(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_Label_set_visible_characters(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -6263,7 +8334,7 @@ static JSValue js_Label_set_visible_characters(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_Label_get_visible_characters(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6271,8 +8342,29 @@ static JSValue js_Label_get_visible_characters(JSContext *ctx, JSValueConst this
     return JS_NewInt64(ctx, (int64_t)ret);
 }
 
+static JSValue js_Label_get_visible_characters_behavior(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_visible_characters_behavior", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Label_set_visible_characters_behavior(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_visible_characters_behavior", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
 static JSValue js_Label_set_visible_ratio(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -6284,7 +8376,7 @@ static JSValue js_Label_set_visible_ratio(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_Label_get_visible_ratio(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6293,7 +8385,7 @@ static JSValue js_Label_get_visible_ratio(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_Label_set_lines_skipped(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -6305,7 +8397,7 @@ static JSValue js_Label_set_lines_skipped(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_Label_get_lines_skipped(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6314,7 +8406,7 @@ static JSValue js_Label_get_lines_skipped(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_Label_set_max_lines_visible(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -6326,7 +8418,7 @@ static JSValue js_Label_set_max_lines_visible(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Label_get_max_lines_visible(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6334,16 +8426,59 @@ static JSValue js_Label_get_max_lines_visible(JSContext *ctx, JSValueConst this_
     return JS_NewInt64(ctx, (int64_t)ret);
 }
 
-static void quickjs_register_Label(JSContext *ctx, JSValue global) {
+static JSValue js_Label_set_structured_text_bidi_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_structured_text_bidi_override", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Label_get_structured_text_bidi_override(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_structured_text_bidi_override", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Label_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("Label");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_Label(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Control_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
+    JS_SetPropertyStr(ctx, proto, "set_horizontal_alignment", JS_NewCFunction(ctx, js_Label_set_horizontal_alignment, "set_horizontal_alignment", 1));
+    JS_SetPropertyStr(ctx, proto, "get_horizontal_alignment", JS_NewCFunction(ctx, js_Label_get_horizontal_alignment, "get_horizontal_alignment", 0));
+    JS_SetPropertyStr(ctx, proto, "set_vertical_alignment", JS_NewCFunction(ctx, js_Label_set_vertical_alignment, "set_vertical_alignment", 1));
+    JS_SetPropertyStr(ctx, proto, "get_vertical_alignment", JS_NewCFunction(ctx, js_Label_get_vertical_alignment, "get_vertical_alignment", 0));
     JS_SetPropertyStr(ctx, proto, "set_text", JS_NewCFunction(ctx, js_Label_set_text, "set_text", 1));
     JS_SetPropertyStr(ctx, proto, "get_text", JS_NewCFunction(ctx, js_Label_get_text, "get_text", 0));
+    JS_SetPropertyStr(ctx, proto, "set_text_direction", JS_NewCFunction(ctx, js_Label_set_text_direction, "set_text_direction", 1));
+    JS_SetPropertyStr(ctx, proto, "get_text_direction", JS_NewCFunction(ctx, js_Label_get_text_direction, "get_text_direction", 0));
     JS_SetPropertyStr(ctx, proto, "set_language", JS_NewCFunction(ctx, js_Label_set_language, "set_language", 1));
     JS_SetPropertyStr(ctx, proto, "get_language", JS_NewCFunction(ctx, js_Label_get_language, "get_language", 0));
     JS_SetPropertyStr(ctx, proto, "set_paragraph_separator", JS_NewCFunction(ctx, js_Label_set_paragraph_separator, "set_paragraph_separator", 1));
     JS_SetPropertyStr(ctx, proto, "get_paragraph_separator", JS_NewCFunction(ctx, js_Label_get_paragraph_separator, "get_paragraph_separator", 0));
+    JS_SetPropertyStr(ctx, proto, "set_autowrap_mode", JS_NewCFunction(ctx, js_Label_set_autowrap_mode, "set_autowrap_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_autowrap_mode", JS_NewCFunction(ctx, js_Label_get_autowrap_mode, "get_autowrap_mode", 0));
+    JS_SetPropertyStr(ctx, proto, "set_justification_flags", JS_NewCFunction(ctx, js_Label_set_justification_flags, "set_justification_flags", 1));
+    JS_SetPropertyStr(ctx, proto, "get_justification_flags", JS_NewCFunction(ctx, js_Label_get_justification_flags, "get_justification_flags", 0));
     JS_SetPropertyStr(ctx, proto, "set_clip_text", JS_NewCFunction(ctx, js_Label_set_clip_text, "set_clip_text", 1));
     JS_SetPropertyStr(ctx, proto, "is_clipping_text", JS_NewCFunction(ctx, js_Label_is_clipping_text, "is_clipping_text", 0));
+    JS_SetPropertyStr(ctx, proto, "set_text_overrun_behavior", JS_NewCFunction(ctx, js_Label_set_text_overrun_behavior, "set_text_overrun_behavior", 1));
+    JS_SetPropertyStr(ctx, proto, "get_text_overrun_behavior", JS_NewCFunction(ctx, js_Label_get_text_overrun_behavior, "get_text_overrun_behavior", 0));
     JS_SetPropertyStr(ctx, proto, "set_ellipsis_char", JS_NewCFunction(ctx, js_Label_set_ellipsis_char, "set_ellipsis_char", 1));
     JS_SetPropertyStr(ctx, proto, "get_ellipsis_char", JS_NewCFunction(ctx, js_Label_get_ellipsis_char, "get_ellipsis_char", 0));
     JS_SetPropertyStr(ctx, proto, "set_uppercase", JS_NewCFunction(ctx, js_Label_set_uppercase, "set_uppercase", 1));
@@ -6354,17 +8489,24 @@ static void quickjs_register_Label(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "get_total_character_count", JS_NewCFunction(ctx, js_Label_get_total_character_count, "get_total_character_count", 0));
     JS_SetPropertyStr(ctx, proto, "set_visible_characters", JS_NewCFunction(ctx, js_Label_set_visible_characters, "set_visible_characters", 1));
     JS_SetPropertyStr(ctx, proto, "get_visible_characters", JS_NewCFunction(ctx, js_Label_get_visible_characters, "get_visible_characters", 0));
+    JS_SetPropertyStr(ctx, proto, "get_visible_characters_behavior", JS_NewCFunction(ctx, js_Label_get_visible_characters_behavior, "get_visible_characters_behavior", 0));
+    JS_SetPropertyStr(ctx, proto, "set_visible_characters_behavior", JS_NewCFunction(ctx, js_Label_set_visible_characters_behavior, "set_visible_characters_behavior", 1));
     JS_SetPropertyStr(ctx, proto, "set_visible_ratio", JS_NewCFunction(ctx, js_Label_set_visible_ratio, "set_visible_ratio", 1));
     JS_SetPropertyStr(ctx, proto, "get_visible_ratio", JS_NewCFunction(ctx, js_Label_get_visible_ratio, "get_visible_ratio", 0));
     JS_SetPropertyStr(ctx, proto, "set_lines_skipped", JS_NewCFunction(ctx, js_Label_set_lines_skipped, "set_lines_skipped", 1));
     JS_SetPropertyStr(ctx, proto, "get_lines_skipped", JS_NewCFunction(ctx, js_Label_get_lines_skipped, "get_lines_skipped", 0));
     JS_SetPropertyStr(ctx, proto, "set_max_lines_visible", JS_NewCFunction(ctx, js_Label_set_max_lines_visible, "set_max_lines_visible", 1));
     JS_SetPropertyStr(ctx, proto, "get_max_lines_visible", JS_NewCFunction(ctx, js_Label_get_max_lines_visible, "get_max_lines_visible", 0));
+    JS_SetPropertyStr(ctx, proto, "set_structured_text_bidi_override", JS_NewCFunction(ctx, js_Label_set_structured_text_bidi_override, "set_structured_text_bidi_override", 1));
+    JS_SetPropertyStr(ctx, proto, "get_structured_text_bidi_override", JS_NewCFunction(ctx, js_Label_get_structured_text_bidi_override, "get_structured_text_bidi_override", 0));
     JS_SetPropertyStr(ctx, global, "_Label_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_Label_constructor, "Label", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "Label", ctor);
 }
 
 static JSValue js_Button_set_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = js_to_string(ctx, argv[0]);
@@ -6376,7 +8518,7 @@ static JSValue js_Button_set_text(JSContext *ctx, JSValueConst this_val, int arg
 }
 
 static JSValue js_Button_get_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6384,8 +8526,71 @@ static JSValue js_Button_get_text(JSContext *ctx, JSValueConst this_val, int arg
     return string_to_js(ctx, (String)ret);
 }
 
+static JSValue js_Button_set_text_overrun_behavior(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_text_overrun_behavior", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Button_get_text_overrun_behavior(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_text_overrun_behavior", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Button_set_autowrap_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_autowrap_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Button_get_autowrap_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_autowrap_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Button_set_text_direction(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_text_direction", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Button_get_text_direction(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_text_direction", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Button_set_language(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = js_to_string(ctx, argv[0]);
@@ -6397,7 +8602,7 @@ static JSValue js_Button_set_language(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Button_get_language(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6406,7 +8611,7 @@ static JSValue js_Button_get_language(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Button_set_flat(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6418,7 +8623,7 @@ static JSValue js_Button_set_flat(JSContext *ctx, JSValueConst this_val, int arg
 }
 
 static JSValue js_Button_is_flat(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6427,7 +8632,7 @@ static JSValue js_Button_is_flat(JSContext *ctx, JSValueConst this_val, int argc
 }
 
 static JSValue js_Button_set_clip_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6439,7 +8644,7 @@ static JSValue js_Button_set_clip_text(JSContext *ctx, JSValueConst this_val, in
 }
 
 static JSValue js_Button_get_clip_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6447,8 +8652,71 @@ static JSValue js_Button_get_clip_text(JSContext *ctx, JSValueConst this_val, in
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Button_set_text_alignment(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_text_alignment", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Button_get_text_alignment(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_text_alignment", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Button_set_icon_alignment(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_icon_alignment", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Button_get_icon_alignment(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_icon_alignment", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Button_set_vertical_icon_alignment(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_vertical_icon_alignment", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Button_get_vertical_icon_alignment(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_vertical_icon_alignment", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Button_set_expand_icon(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6460,7 +8728,7 @@ static JSValue js_Button_set_expand_icon(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_Button_is_expand_icon(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6468,23 +8736,69 @@ static JSValue js_Button_is_expand_icon(JSContext *ctx, JSValueConst this_val, i
     return JS_NewBool(ctx, (bool)ret);
 }
 
-static void quickjs_register_Button(JSContext *ctx, JSValue global) {
+static JSValue js_Button_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("Button");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_Button(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Control_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_text", JS_NewCFunction(ctx, js_Button_set_text, "set_text", 1));
     JS_SetPropertyStr(ctx, proto, "get_text", JS_NewCFunction(ctx, js_Button_get_text, "get_text", 0));
+    JS_SetPropertyStr(ctx, proto, "set_text_overrun_behavior", JS_NewCFunction(ctx, js_Button_set_text_overrun_behavior, "set_text_overrun_behavior", 1));
+    JS_SetPropertyStr(ctx, proto, "get_text_overrun_behavior", JS_NewCFunction(ctx, js_Button_get_text_overrun_behavior, "get_text_overrun_behavior", 0));
+    JS_SetPropertyStr(ctx, proto, "set_autowrap_mode", JS_NewCFunction(ctx, js_Button_set_autowrap_mode, "set_autowrap_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_autowrap_mode", JS_NewCFunction(ctx, js_Button_get_autowrap_mode, "get_autowrap_mode", 0));
+    JS_SetPropertyStr(ctx, proto, "set_text_direction", JS_NewCFunction(ctx, js_Button_set_text_direction, "set_text_direction", 1));
+    JS_SetPropertyStr(ctx, proto, "get_text_direction", JS_NewCFunction(ctx, js_Button_get_text_direction, "get_text_direction", 0));
     JS_SetPropertyStr(ctx, proto, "set_language", JS_NewCFunction(ctx, js_Button_set_language, "set_language", 1));
     JS_SetPropertyStr(ctx, proto, "get_language", JS_NewCFunction(ctx, js_Button_get_language, "get_language", 0));
     JS_SetPropertyStr(ctx, proto, "set_flat", JS_NewCFunction(ctx, js_Button_set_flat, "set_flat", 1));
     JS_SetPropertyStr(ctx, proto, "is_flat", JS_NewCFunction(ctx, js_Button_is_flat, "is_flat", 0));
     JS_SetPropertyStr(ctx, proto, "set_clip_text", JS_NewCFunction(ctx, js_Button_set_clip_text, "set_clip_text", 1));
     JS_SetPropertyStr(ctx, proto, "get_clip_text", JS_NewCFunction(ctx, js_Button_get_clip_text, "get_clip_text", 0));
+    JS_SetPropertyStr(ctx, proto, "set_text_alignment", JS_NewCFunction(ctx, js_Button_set_text_alignment, "set_text_alignment", 1));
+    JS_SetPropertyStr(ctx, proto, "get_text_alignment", JS_NewCFunction(ctx, js_Button_get_text_alignment, "get_text_alignment", 0));
+    JS_SetPropertyStr(ctx, proto, "set_icon_alignment", JS_NewCFunction(ctx, js_Button_set_icon_alignment, "set_icon_alignment", 1));
+    JS_SetPropertyStr(ctx, proto, "get_icon_alignment", JS_NewCFunction(ctx, js_Button_get_icon_alignment, "get_icon_alignment", 0));
+    JS_SetPropertyStr(ctx, proto, "set_vertical_icon_alignment", JS_NewCFunction(ctx, js_Button_set_vertical_icon_alignment, "set_vertical_icon_alignment", 1));
+    JS_SetPropertyStr(ctx, proto, "get_vertical_icon_alignment", JS_NewCFunction(ctx, js_Button_get_vertical_icon_alignment, "get_vertical_icon_alignment", 0));
     JS_SetPropertyStr(ctx, proto, "set_expand_icon", JS_NewCFunction(ctx, js_Button_set_expand_icon, "set_expand_icon", 1));
     JS_SetPropertyStr(ctx, proto, "is_expand_icon", JS_NewCFunction(ctx, js_Button_is_expand_icon, "is_expand_icon", 0));
     JS_SetPropertyStr(ctx, global, "_Button_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_Button_constructor, "Button", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "Button", ctor);
+}
+
+static JSValue js_TextureRect_set_expand_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_expand_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_TextureRect_get_expand_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_expand_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
 }
 
 static JSValue js_TextureRect_set_flip_h(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6496,7 +8810,7 @@ static JSValue js_TextureRect_set_flip_h(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_TextureRect_is_flipped_h(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6505,7 +8819,7 @@ static JSValue js_TextureRect_is_flipped_h(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_TextureRect_set_flip_v(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6517,7 +8831,7 @@ static JSValue js_TextureRect_set_flip_v(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_TextureRect_is_flipped_v(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6525,17 +8839,55 @@ static JSValue js_TextureRect_is_flipped_v(JSContext *ctx, JSValueConst this_val
     return JS_NewBool(ctx, (bool)ret);
 }
 
-static void quickjs_register_TextureRect(JSContext *ctx, JSValue global) {
+static JSValue js_TextureRect_set_stretch_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_stretch_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_TextureRect_get_stretch_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_stretch_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_TextureRect_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("TextureRect");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_TextureRect(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Control_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
+    JS_SetPropertyStr(ctx, proto, "set_expand_mode", JS_NewCFunction(ctx, js_TextureRect_set_expand_mode, "set_expand_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_expand_mode", JS_NewCFunction(ctx, js_TextureRect_get_expand_mode, "get_expand_mode", 0));
     JS_SetPropertyStr(ctx, proto, "set_flip_h", JS_NewCFunction(ctx, js_TextureRect_set_flip_h, "set_flip_h", 1));
     JS_SetPropertyStr(ctx, proto, "is_flipped_h", JS_NewCFunction(ctx, js_TextureRect_is_flipped_h, "is_flipped_h", 0));
     JS_SetPropertyStr(ctx, proto, "set_flip_v", JS_NewCFunction(ctx, js_TextureRect_set_flip_v, "set_flip_v", 1));
     JS_SetPropertyStr(ctx, proto, "is_flipped_v", JS_NewCFunction(ctx, js_TextureRect_is_flipped_v, "is_flipped_v", 0));
+    JS_SetPropertyStr(ctx, proto, "set_stretch_mode", JS_NewCFunction(ctx, js_TextureRect_set_stretch_mode, "set_stretch_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_stretch_mode", JS_NewCFunction(ctx, js_TextureRect_get_stretch_mode, "get_stretch_mode", 0));
     JS_SetPropertyStr(ctx, global, "_TextureRect_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_TextureRect_constructor, "TextureRect", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "TextureRect", ctor);
 }
 
 static JSValue js_ProgressBar_set_fill_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -6547,7 +8899,7 @@ static JSValue js_ProgressBar_set_fill_mode(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_ProgressBar_get_fill_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6556,7 +8908,7 @@ static JSValue js_ProgressBar_get_fill_mode(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_ProgressBar_set_show_percentage(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6568,7 +8920,7 @@ static JSValue js_ProgressBar_set_show_percentage(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_ProgressBar_is_percentage_shown(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6577,7 +8929,7 @@ static JSValue js_ProgressBar_is_percentage_shown(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_ProgressBar_set_indeterminate(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6589,7 +8941,7 @@ static JSValue js_ProgressBar_set_indeterminate(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_ProgressBar_is_indeterminate(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6598,7 +8950,7 @@ static JSValue js_ProgressBar_is_indeterminate(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_ProgressBar_set_editor_preview_indeterminate(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6610,7 +8962,7 @@ static JSValue js_ProgressBar_set_editor_preview_indeterminate(JSContext *ctx, J
 }
 
 static JSValue js_ProgressBar_is_editor_preview_indeterminate_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6618,8 +8970,18 @@ static JSValue js_ProgressBar_is_editor_preview_indeterminate_enabled(JSContext 
     return JS_NewBool(ctx, (bool)ret);
 }
 
-static void quickjs_register_ProgressBar(JSContext *ctx, JSValue global) {
+static JSValue js_ProgressBar_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("ProgressBar");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_ProgressBar(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Control_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_fill_mode", JS_NewCFunction(ctx, js_ProgressBar_set_fill_mode, "set_fill_mode", 1));
     JS_SetPropertyStr(ctx, proto, "get_fill_mode", JS_NewCFunction(ctx, js_ProgressBar_get_fill_mode, "get_fill_mode", 0));
     JS_SetPropertyStr(ctx, proto, "set_show_percentage", JS_NewCFunction(ctx, js_ProgressBar_set_show_percentage, "set_show_percentage", 1));
@@ -6629,25 +8991,67 @@ static void quickjs_register_ProgressBar(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "set_editor_preview_indeterminate", JS_NewCFunction(ctx, js_ProgressBar_set_editor_preview_indeterminate, "set_editor_preview_indeterminate", 1));
     JS_SetPropertyStr(ctx, proto, "is_editor_preview_indeterminate_enabled", JS_NewCFunction(ctx, js_ProgressBar_is_editor_preview_indeterminate_enabled, "is_editor_preview_indeterminate_enabled", 0));
     JS_SetPropertyStr(ctx, global, "_ProgressBar_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_ProgressBar_constructor, "ProgressBar", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "ProgressBar", ctor);
 }
 
-static void quickjs_register_Panel(JSContext *ctx, JSValue global) {
+static JSValue js_Panel_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("Panel");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_Panel(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Control_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, global, "_Panel_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_Panel_constructor, "Panel", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "Panel", ctor);
 }
 
-static void quickjs_register_VBoxContainer(JSContext *ctx, JSValue global) {
+static JSValue js_VBoxContainer_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("VBoxContainer");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_VBoxContainer(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Control_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, global, "_VBoxContainer_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_VBoxContainer_constructor, "VBoxContainer", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "VBoxContainer", ctor);
 }
 
-static void quickjs_register_HBoxContainer(JSContext *ctx, JSValue global) {
+static JSValue js_HBoxContainer_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("HBoxContainer");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_HBoxContainer(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Control_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, global, "_HBoxContainer_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_HBoxContainer_constructor, "HBoxContainer", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "HBoxContainer", ctor);
 }
 
 static JSValue js_GridContainer_set_columns(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -6659,7 +9063,7 @@ static JSValue js_GridContainer_set_columns(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_GridContainer_get_columns(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6667,15 +9071,28 @@ static JSValue js_GridContainer_get_columns(JSContext *ctx, JSValueConst this_va
     return JS_NewInt64(ctx, (int64_t)ret);
 }
 
-static void quickjs_register_GridContainer(JSContext *ctx, JSValue global) {
+static JSValue js_GridContainer_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("GridContainer");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_GridContainer(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Control_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_columns", JS_NewCFunction(ctx, js_GridContainer_set_columns, "set_columns", 1));
     JS_SetPropertyStr(ctx, proto, "get_columns", JS_NewCFunction(ctx, js_GridContainer_get_columns, "get_columns", 0));
     JS_SetPropertyStr(ctx, global, "_GridContainer_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_GridContainer_constructor, "GridContainer", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "GridContainer", ctor);
 }
 
 static JSValue js_SceneTree_has_group(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -6687,7 +9104,7 @@ static JSValue js_SceneTree_has_group(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_SceneTree_is_auto_accept_quit(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6696,7 +9113,7 @@ static JSValue js_SceneTree_is_auto_accept_quit(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_SceneTree_set_auto_accept_quit(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6708,7 +9125,7 @@ static JSValue js_SceneTree_set_auto_accept_quit(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_SceneTree_is_quit_on_go_back(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6717,7 +9134,7 @@ static JSValue js_SceneTree_is_quit_on_go_back(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_SceneTree_set_quit_on_go_back(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6729,7 +9146,7 @@ static JSValue js_SceneTree_set_quit_on_go_back(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_SceneTree_set_debug_collisions_hint(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6741,7 +9158,7 @@ static JSValue js_SceneTree_set_debug_collisions_hint(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_SceneTree_is_debugging_collisions_hint(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6750,7 +9167,7 @@ static JSValue js_SceneTree_is_debugging_collisions_hint(JSContext *ctx, JSValue
 }
 
 static JSValue js_SceneTree_set_debug_paths_hint(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6762,7 +9179,7 @@ static JSValue js_SceneTree_set_debug_paths_hint(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_SceneTree_is_debugging_paths_hint(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6771,7 +9188,7 @@ static JSValue js_SceneTree_is_debugging_paths_hint(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_SceneTree_set_debug_navigation_hint(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6783,7 +9200,7 @@ static JSValue js_SceneTree_set_debug_navigation_hint(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_SceneTree_is_debugging_navigation_hint(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6791,8 +9208,30 @@ static JSValue js_SceneTree_is_debugging_navigation_hint(JSContext *ctx, JSValue
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_SceneTree_set_edited_scene_root(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_edited_scene_root", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_SceneTree_get_edited_scene_root(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_edited_scene_root", nullptr, 0, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
 static JSValue js_SceneTree_set_pause(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6804,7 +9243,7 @@ static JSValue js_SceneTree_set_pause(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_SceneTree_is_paused(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6813,7 +9252,7 @@ static JSValue js_SceneTree_is_paused(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_SceneTree_get_node_count(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6822,7 +9261,7 @@ static JSValue js_SceneTree_get_node_count(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_SceneTree_get_frame(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6831,7 +9270,7 @@ static JSValue js_SceneTree_get_frame(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_SceneTree_quit(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -6843,7 +9282,7 @@ static JSValue js_SceneTree_quit(JSContext *ctx, JSValueConst this_val, int argc
 }
 
 static JSValue js_SceneTree_set_physics_interpolation_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6855,7 +9294,7 @@ static JSValue js_SceneTree_set_physics_interpolation_enabled(JSContext *ctx, JS
 }
 
 static JSValue js_SceneTree_is_physics_interpolation_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6864,7 +9303,7 @@ static JSValue js_SceneTree_is_physics_interpolation_enabled(JSContext *ctx, JSV
 }
 
 static JSValue js_SceneTree_notify_group_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -6878,7 +9317,7 @@ static JSValue js_SceneTree_notify_group_flags(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_SceneTree_notify_group(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -6890,8 +9329,21 @@ static JSValue js_SceneTree_notify_group(JSContext *ctx, JSValueConst this_val, 
     return JS_UNDEFINED;
 }
 
+static JSValue js_SceneTree_get_first_node_in_group(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    String arg0 = StringName(js_to_string(ctx, argv[0]));
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    Variant ret = obj->callp("get_first_node_in_group", argptrs, 1, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
 static JSValue js_SceneTree_get_node_count_in_group(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = StringName(js_to_string(ctx, argv[0]));
@@ -6902,8 +9354,51 @@ static JSValue js_SceneTree_get_node_count_in_group(JSContext *ctx, JSValueConst
     return JS_NewInt64(ctx, (int64_t)ret);
 }
 
+static JSValue js_SceneTree_set_current_scene(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_current_scene", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_SceneTree_get_current_scene(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_current_scene", nullptr, 0, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
+static JSValue js_SceneTree_change_scene_to_file(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    String arg0 = js_to_string(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    Variant ret = obj->callp("change_scene_to_file", argptrs, 1, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_SceneTree_reload_current_scene(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("reload_current_scene", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_SceneTree_unload_current_scene(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6912,7 +9407,7 @@ static JSValue js_SceneTree_unload_current_scene(JSContext *ctx, JSValueConst th
 }
 
 static JSValue js_SceneTree_set_multiplayer_poll_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6924,7 +9419,7 @@ static JSValue js_SceneTree_set_multiplayer_poll_enabled(JSContext *ctx, JSValue
 }
 
 static JSValue js_SceneTree_is_multiplayer_poll_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6932,7 +9427,7 @@ static JSValue js_SceneTree_is_multiplayer_poll_enabled(JSContext *ctx, JSValueC
     return JS_NewBool(ctx, (bool)ret);
 }
 
-static void quickjs_register_SceneTree(JSContext *ctx, JSValue global) {
+static void quickjs_register_SceneTree(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, proto, "has_group", JS_NewCFunction(ctx, js_SceneTree_has_group, "has_group", 1));
     JS_SetPropertyStr(ctx, proto, "is_auto_accept_quit", JS_NewCFunction(ctx, js_SceneTree_is_auto_accept_quit, "is_auto_accept_quit", 0));
@@ -6945,6 +9440,8 @@ static void quickjs_register_SceneTree(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "is_debugging_paths_hint", JS_NewCFunction(ctx, js_SceneTree_is_debugging_paths_hint, "is_debugging_paths_hint", 0));
     JS_SetPropertyStr(ctx, proto, "set_debug_navigation_hint", JS_NewCFunction(ctx, js_SceneTree_set_debug_navigation_hint, "set_debug_navigation_hint", 1));
     JS_SetPropertyStr(ctx, proto, "is_debugging_navigation_hint", JS_NewCFunction(ctx, js_SceneTree_is_debugging_navigation_hint, "is_debugging_navigation_hint", 0));
+    JS_SetPropertyStr(ctx, proto, "set_edited_scene_root", JS_NewCFunction(ctx, js_SceneTree_set_edited_scene_root, "set_edited_scene_root", 1));
+    JS_SetPropertyStr(ctx, proto, "get_edited_scene_root", JS_NewCFunction(ctx, js_SceneTree_get_edited_scene_root, "get_edited_scene_root", 0));
     JS_SetPropertyStr(ctx, proto, "set_pause", JS_NewCFunction(ctx, js_SceneTree_set_pause, "set_pause", 1));
     JS_SetPropertyStr(ctx, proto, "is_paused", JS_NewCFunction(ctx, js_SceneTree_is_paused, "is_paused", 0));
     JS_SetPropertyStr(ctx, proto, "get_node_count", JS_NewCFunction(ctx, js_SceneTree_get_node_count, "get_node_count", 0));
@@ -6954,7 +9451,12 @@ static void quickjs_register_SceneTree(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "is_physics_interpolation_enabled", JS_NewCFunction(ctx, js_SceneTree_is_physics_interpolation_enabled, "is_physics_interpolation_enabled", 0));
     JS_SetPropertyStr(ctx, proto, "notify_group_flags", JS_NewCFunction(ctx, js_SceneTree_notify_group_flags, "notify_group_flags", 3));
     JS_SetPropertyStr(ctx, proto, "notify_group", JS_NewCFunction(ctx, js_SceneTree_notify_group, "notify_group", 2));
+    JS_SetPropertyStr(ctx, proto, "get_first_node_in_group", JS_NewCFunction(ctx, js_SceneTree_get_first_node_in_group, "get_first_node_in_group", 1));
     JS_SetPropertyStr(ctx, proto, "get_node_count_in_group", JS_NewCFunction(ctx, js_SceneTree_get_node_count_in_group, "get_node_count_in_group", 1));
+    JS_SetPropertyStr(ctx, proto, "set_current_scene", JS_NewCFunction(ctx, js_SceneTree_set_current_scene, "set_current_scene", 1));
+    JS_SetPropertyStr(ctx, proto, "get_current_scene", JS_NewCFunction(ctx, js_SceneTree_get_current_scene, "get_current_scene", 0));
+    JS_SetPropertyStr(ctx, proto, "change_scene_to_file", JS_NewCFunction(ctx, js_SceneTree_change_scene_to_file, "change_scene_to_file", 1));
+    JS_SetPropertyStr(ctx, proto, "reload_current_scene", JS_NewCFunction(ctx, js_SceneTree_reload_current_scene, "reload_current_scene", 0));
     JS_SetPropertyStr(ctx, proto, "unload_current_scene", JS_NewCFunction(ctx, js_SceneTree_unload_current_scene, "unload_current_scene", 0));
     JS_SetPropertyStr(ctx, proto, "set_multiplayer_poll_enabled", JS_NewCFunction(ctx, js_SceneTree_set_multiplayer_poll_enabled, "set_multiplayer_poll_enabled", 1));
     JS_SetPropertyStr(ctx, proto, "is_multiplayer_poll_enabled", JS_NewCFunction(ctx, js_SceneTree_is_multiplayer_poll_enabled, "is_multiplayer_poll_enabled", 0));
@@ -6962,7 +9464,7 @@ static void quickjs_register_SceneTree(JSContext *ctx, JSValue global) {
 }
 
 static JSValue js_Viewport_set_transparent_background(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6974,7 +9476,7 @@ static JSValue js_Viewport_set_transparent_background(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_Viewport_has_transparent_background(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -6983,7 +9485,7 @@ static JSValue js_Viewport_has_transparent_background(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_Viewport_set_use_hdr_2d(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -6995,7 +9497,7 @@ static JSValue js_Viewport_set_use_hdr_2d(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_Viewport_is_using_hdr_2d(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7003,8 +9505,71 @@ static JSValue js_Viewport_is_using_hdr_2d(JSContext *ctx, JSValueConst this_val
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Viewport_set_msaa_2d(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_msaa_2d", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Viewport_get_msaa_2d(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_msaa_2d", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Viewport_set_msaa_3d(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_msaa_3d", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Viewport_get_msaa_3d(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_msaa_3d", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Viewport_set_screen_space_aa(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_screen_space_aa", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Viewport_get_screen_space_aa(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_screen_space_aa", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Viewport_set_use_taa(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7016,7 +9581,7 @@ static JSValue js_Viewport_set_use_taa(JSContext *ctx, JSValueConst this_val, in
 }
 
 static JSValue js_Viewport_is_using_taa(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7025,7 +9590,7 @@ static JSValue js_Viewport_is_using_taa(JSContext *ctx, JSValueConst this_val, i
 }
 
 static JSValue js_Viewport_set_use_debanding(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7037,7 +9602,7 @@ static JSValue js_Viewport_set_use_debanding(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Viewport_is_using_debanding(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7046,7 +9611,7 @@ static JSValue js_Viewport_is_using_debanding(JSContext *ctx, JSValueConst this_
 }
 
 static JSValue js_Viewport_set_use_occlusion_culling(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7058,7 +9623,7 @@ static JSValue js_Viewport_set_use_occlusion_culling(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_Viewport_is_using_occlusion_culling(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7066,8 +9631,42 @@ static JSValue js_Viewport_is_using_occlusion_culling(JSContext *ctx, JSValueCon
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Viewport_set_debug_draw(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_debug_draw", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Viewport_get_debug_draw(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_debug_draw", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Viewport_get_render_info(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    int64_t arg1 = js_to_int(ctx, argv[1]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1) };
+    const Variant *argptrs[] = { &args[0], &args[1] };
+    Variant ret = obj->callp("get_render_info", argptrs, 2, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Viewport_set_physics_object_picking(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7079,7 +9678,7 @@ static JSValue js_Viewport_set_physics_object_picking(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_Viewport_get_physics_object_picking(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7088,7 +9687,7 @@ static JSValue js_Viewport_get_physics_object_picking(JSContext *ctx, JSValueCon
 }
 
 static JSValue js_Viewport_set_physics_object_picking_sort(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7100,7 +9699,7 @@ static JSValue js_Viewport_set_physics_object_picking_sort(JSContext *ctx, JSVal
 }
 
 static JSValue js_Viewport_get_physics_object_picking_sort(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7109,7 +9708,7 @@ static JSValue js_Viewport_get_physics_object_picking_sort(JSContext *ctx, JSVal
 }
 
 static JSValue js_Viewport_set_physics_object_picking_first_only(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7121,7 +9720,7 @@ static JSValue js_Viewport_set_physics_object_picking_first_only(JSContext *ctx,
 }
 
 static JSValue js_Viewport_get_physics_object_picking_first_only(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7130,7 +9729,7 @@ static JSValue js_Viewport_get_physics_object_picking_first_only(JSContext *ctx,
 }
 
 static JSValue js_Viewport_push_text_input(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     String arg0 = js_to_string(ctx, argv[0]);
@@ -7142,7 +9741,7 @@ static JSValue js_Viewport_push_text_input(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_Viewport_notify_mouse_entered(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7151,7 +9750,7 @@ static JSValue js_Viewport_notify_mouse_entered(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_Viewport_notify_mouse_exited(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7160,7 +9759,7 @@ static JSValue js_Viewport_notify_mouse_exited(JSContext *ctx, JSValueConst this
 }
 
 static JSValue js_Viewport_update_mouse_cursor_state(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7169,7 +9768,7 @@ static JSValue js_Viewport_update_mouse_cursor_state(JSContext *ctx, JSValueCons
 }
 
 static JSValue js_Viewport_gui_cancel_drag(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7178,7 +9777,7 @@ static JSValue js_Viewport_gui_cancel_drag(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_Viewport_gui_is_dragging(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7187,7 +9786,7 @@ static JSValue js_Viewport_gui_is_dragging(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_Viewport_gui_is_drag_successful(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7196,7 +9795,7 @@ static JSValue js_Viewport_gui_is_drag_successful(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_Viewport_gui_release_focus(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7204,8 +9803,28 @@ static JSValue js_Viewport_gui_release_focus(JSContext *ctx, JSValueConst this_v
     return JS_UNDEFINED;
 }
 
+static JSValue js_Viewport_gui_get_focus_owner(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("gui_get_focus_owner", nullptr, 0, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
+static JSValue js_Viewport_gui_get_hovered_control(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("gui_get_hovered_control", nullptr, 0, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
 static JSValue js_Viewport_set_disable_input(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7217,7 +9836,7 @@ static JSValue js_Viewport_set_disable_input(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Viewport_is_input_disabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7226,7 +9845,7 @@ static JSValue js_Viewport_is_input_disabled(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Viewport_set_positional_shadow_atlas_size(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -7238,7 +9857,7 @@ static JSValue js_Viewport_set_positional_shadow_atlas_size(JSContext *ctx, JSVa
 }
 
 static JSValue js_Viewport_get_positional_shadow_atlas_size(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7247,7 +9866,7 @@ static JSValue js_Viewport_get_positional_shadow_atlas_size(JSContext *ctx, JSVa
 }
 
 static JSValue js_Viewport_set_positional_shadow_atlas_16_bits(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7259,7 +9878,7 @@ static JSValue js_Viewport_set_positional_shadow_atlas_16_bits(JSContext *ctx, J
 }
 
 static JSValue js_Viewport_get_positional_shadow_atlas_16_bits(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7268,7 +9887,7 @@ static JSValue js_Viewport_get_positional_shadow_atlas_16_bits(JSContext *ctx, J
 }
 
 static JSValue js_Viewport_set_snap_controls_to_pixels(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7280,7 +9899,7 @@ static JSValue js_Viewport_set_snap_controls_to_pixels(JSContext *ctx, JSValueCo
 }
 
 static JSValue js_Viewport_is_snap_controls_to_pixels_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7289,7 +9908,7 @@ static JSValue js_Viewport_is_snap_controls_to_pixels_enabled(JSContext *ctx, JS
 }
 
 static JSValue js_Viewport_set_snap_2d_transforms_to_pixel(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7301,7 +9920,7 @@ static JSValue js_Viewport_set_snap_2d_transforms_to_pixel(JSContext *ctx, JSVal
 }
 
 static JSValue js_Viewport_is_snap_2d_transforms_to_pixel_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7310,7 +9929,7 @@ static JSValue js_Viewport_is_snap_2d_transforms_to_pixel_enabled(JSContext *ctx
 }
 
 static JSValue js_Viewport_set_snap_2d_vertices_to_pixel(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7322,7 +9941,7 @@ static JSValue js_Viewport_set_snap_2d_vertices_to_pixel(JSContext *ctx, JSValue
 }
 
 static JSValue js_Viewport_is_snap_2d_vertices_to_pixel_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7330,8 +9949,33 @@ static JSValue js_Viewport_is_snap_2d_vertices_to_pixel_enabled(JSContext *ctx, 
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Viewport_set_positional_shadow_atlas_quadrant_subdiv(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    int64_t arg1 = js_to_int(ctx, argv[1]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0), Variant(arg1) };
+    const Variant *argptrs[] = { &args[0], &args[1] };
+    obj->callp("set_positional_shadow_atlas_quadrant_subdiv", argptrs, 2, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Viewport_get_positional_shadow_atlas_quadrant_subdiv(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    Variant ret = obj->callp("get_positional_shadow_atlas_quadrant_subdiv", argptrs, 1, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Viewport_set_input_as_handled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7340,7 +9984,7 @@ static JSValue js_Viewport_set_input_as_handled(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_Viewport_is_input_handled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7349,7 +9993,7 @@ static JSValue js_Viewport_is_input_handled(JSContext *ctx, JSValueConst this_va
 }
 
 static JSValue js_Viewport_set_handle_input_locally(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7361,7 +10005,7 @@ static JSValue js_Viewport_set_handle_input_locally(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_Viewport_is_handling_input_locally(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7369,8 +10013,29 @@ static JSValue js_Viewport_is_handling_input_locally(JSContext *ctx, JSValueCons
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Viewport_set_default_canvas_item_texture_filter(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_default_canvas_item_texture_filter", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Viewport_get_default_canvas_item_texture_filter(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_default_canvas_item_texture_filter", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Viewport_set_embedding_subwindows(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7382,7 +10047,7 @@ static JSValue js_Viewport_set_embedding_subwindows(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_Viewport_is_embedding_subwindows(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7391,7 +10056,7 @@ static JSValue js_Viewport_is_embedding_subwindows(JSContext *ctx, JSValueConst 
 }
 
 static JSValue js_Viewport_set_canvas_cull_mask(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -7403,7 +10068,7 @@ static JSValue js_Viewport_set_canvas_cull_mask(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_Viewport_get_canvas_cull_mask(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7412,7 +10077,7 @@ static JSValue js_Viewport_get_canvas_cull_mask(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_Viewport_set_canvas_cull_mask_bit(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -7425,7 +10090,7 @@ static JSValue js_Viewport_set_canvas_cull_mask_bit(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_Viewport_get_canvas_cull_mask_bit(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -7436,8 +10101,71 @@ static JSValue js_Viewport_get_canvas_cull_mask_bit(JSContext *ctx, JSValueConst
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Viewport_set_default_canvas_item_texture_repeat(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_default_canvas_item_texture_repeat", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Viewport_get_default_canvas_item_texture_repeat(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_default_canvas_item_texture_repeat", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Viewport_set_sdf_oversize(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_sdf_oversize", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Viewport_get_sdf_oversize(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_sdf_oversize", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Viewport_set_sdf_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_sdf_scale", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Viewport_get_sdf_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_sdf_scale", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Viewport_set_mesh_lod_threshold(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -7449,7 +10177,7 @@ static JSValue js_Viewport_set_mesh_lod_threshold(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_Viewport_get_mesh_lod_threshold(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7458,7 +10186,7 @@ static JSValue js_Viewport_get_mesh_lod_threshold(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_Viewport_set_as_audio_listener_2d(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7470,7 +10198,7 @@ static JSValue js_Viewport_set_as_audio_listener_2d(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_Viewport_is_audio_listener_2d(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7479,7 +10207,7 @@ static JSValue js_Viewport_is_audio_listener_2d(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_Viewport_set_use_own_world_3d(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7491,7 +10219,7 @@ static JSValue js_Viewport_set_use_own_world_3d(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_Viewport_is_using_own_world_3d(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7499,8 +10227,18 @@ static JSValue js_Viewport_is_using_own_world_3d(JSContext *ctx, JSValueConst th
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Viewport_get_camera_3d(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_camera_3d", nullptr, 0, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
 static JSValue js_Viewport_set_as_audio_listener_3d(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7512,7 +10250,7 @@ static JSValue js_Viewport_set_as_audio_listener_3d(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_Viewport_is_audio_listener_3d(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7521,7 +10259,7 @@ static JSValue js_Viewport_is_audio_listener_3d(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_Viewport_set_disable_3d(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7533,7 +10271,7 @@ static JSValue js_Viewport_set_disable_3d(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_Viewport_is_3d_disabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7542,7 +10280,7 @@ static JSValue js_Viewport_is_3d_disabled(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_Viewport_set_use_xr(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7554,7 +10292,7 @@ static JSValue js_Viewport_set_use_xr(JSContext *ctx, JSValueConst this_val, int
 }
 
 static JSValue js_Viewport_is_using_xr(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7562,8 +10300,29 @@ static JSValue js_Viewport_is_using_xr(JSContext *ctx, JSValueConst this_val, in
     return JS_NewBool(ctx, (bool)ret);
 }
 
+static JSValue js_Viewport_set_scaling_3d_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_scaling_3d_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Viewport_get_scaling_3d_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_scaling_3d_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
 static JSValue js_Viewport_set_scaling_3d_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -7575,7 +10334,7 @@ static JSValue js_Viewport_set_scaling_3d_scale(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_Viewport_get_scaling_3d_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7584,7 +10343,7 @@ static JSValue js_Viewport_get_scaling_3d_scale(JSContext *ctx, JSValueConst thi
 }
 
 static JSValue js_Viewport_set_fsr_sharpness(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -7596,7 +10355,7 @@ static JSValue js_Viewport_set_fsr_sharpness(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Viewport_get_fsr_sharpness(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7605,7 +10364,7 @@ static JSValue js_Viewport_get_fsr_sharpness(JSContext *ctx, JSValueConst this_v
 }
 
 static JSValue js_Viewport_set_texture_mipmap_bias(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -7617,7 +10376,7 @@ static JSValue js_Viewport_set_texture_mipmap_bias(JSContext *ctx, JSValueConst 
 }
 
 static JSValue js_Viewport_get_texture_mipmap_bias(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7625,18 +10384,95 @@ static JSValue js_Viewport_get_texture_mipmap_bias(JSContext *ctx, JSValueConst 
     return JS_NewFloat64(ctx, (double)ret);
 }
 
-static void quickjs_register_Viewport(JSContext *ctx, JSValue global) {
+static JSValue js_Viewport_set_anisotropic_filtering_level(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_anisotropic_filtering_level", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Viewport_get_anisotropic_filtering_level(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_anisotropic_filtering_level", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Viewport_set_vrs_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_vrs_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Viewport_get_vrs_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_vrs_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_Viewport_set_vrs_update_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_vrs_update_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_Viewport_get_vrs_update_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_vrs_update_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static void quickjs_register_Viewport(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_transparent_background", JS_NewCFunction(ctx, js_Viewport_set_transparent_background, "set_transparent_background", 1));
     JS_SetPropertyStr(ctx, proto, "has_transparent_background", JS_NewCFunction(ctx, js_Viewport_has_transparent_background, "has_transparent_background", 0));
     JS_SetPropertyStr(ctx, proto, "set_use_hdr_2d", JS_NewCFunction(ctx, js_Viewport_set_use_hdr_2d, "set_use_hdr_2d", 1));
     JS_SetPropertyStr(ctx, proto, "is_using_hdr_2d", JS_NewCFunction(ctx, js_Viewport_is_using_hdr_2d, "is_using_hdr_2d", 0));
+    JS_SetPropertyStr(ctx, proto, "set_msaa_2d", JS_NewCFunction(ctx, js_Viewport_set_msaa_2d, "set_msaa_2d", 1));
+    JS_SetPropertyStr(ctx, proto, "get_msaa_2d", JS_NewCFunction(ctx, js_Viewport_get_msaa_2d, "get_msaa_2d", 0));
+    JS_SetPropertyStr(ctx, proto, "set_msaa_3d", JS_NewCFunction(ctx, js_Viewport_set_msaa_3d, "set_msaa_3d", 1));
+    JS_SetPropertyStr(ctx, proto, "get_msaa_3d", JS_NewCFunction(ctx, js_Viewport_get_msaa_3d, "get_msaa_3d", 0));
+    JS_SetPropertyStr(ctx, proto, "set_screen_space_aa", JS_NewCFunction(ctx, js_Viewport_set_screen_space_aa, "set_screen_space_aa", 1));
+    JS_SetPropertyStr(ctx, proto, "get_screen_space_aa", JS_NewCFunction(ctx, js_Viewport_get_screen_space_aa, "get_screen_space_aa", 0));
     JS_SetPropertyStr(ctx, proto, "set_use_taa", JS_NewCFunction(ctx, js_Viewport_set_use_taa, "set_use_taa", 1));
     JS_SetPropertyStr(ctx, proto, "is_using_taa", JS_NewCFunction(ctx, js_Viewport_is_using_taa, "is_using_taa", 0));
     JS_SetPropertyStr(ctx, proto, "set_use_debanding", JS_NewCFunction(ctx, js_Viewport_set_use_debanding, "set_use_debanding", 1));
     JS_SetPropertyStr(ctx, proto, "is_using_debanding", JS_NewCFunction(ctx, js_Viewport_is_using_debanding, "is_using_debanding", 0));
     JS_SetPropertyStr(ctx, proto, "set_use_occlusion_culling", JS_NewCFunction(ctx, js_Viewport_set_use_occlusion_culling, "set_use_occlusion_culling", 1));
     JS_SetPropertyStr(ctx, proto, "is_using_occlusion_culling", JS_NewCFunction(ctx, js_Viewport_is_using_occlusion_culling, "is_using_occlusion_culling", 0));
+    JS_SetPropertyStr(ctx, proto, "set_debug_draw", JS_NewCFunction(ctx, js_Viewport_set_debug_draw, "set_debug_draw", 1));
+    JS_SetPropertyStr(ctx, proto, "get_debug_draw", JS_NewCFunction(ctx, js_Viewport_get_debug_draw, "get_debug_draw", 0));
+    JS_SetPropertyStr(ctx, proto, "get_render_info", JS_NewCFunction(ctx, js_Viewport_get_render_info, "get_render_info", 2));
     JS_SetPropertyStr(ctx, proto, "set_physics_object_picking", JS_NewCFunction(ctx, js_Viewport_set_physics_object_picking, "set_physics_object_picking", 1));
     JS_SetPropertyStr(ctx, proto, "get_physics_object_picking", JS_NewCFunction(ctx, js_Viewport_get_physics_object_picking, "get_physics_object_picking", 0));
     JS_SetPropertyStr(ctx, proto, "set_physics_object_picking_sort", JS_NewCFunction(ctx, js_Viewport_set_physics_object_picking_sort, "set_physics_object_picking_sort", 1));
@@ -7651,6 +10487,8 @@ static void quickjs_register_Viewport(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "gui_is_dragging", JS_NewCFunction(ctx, js_Viewport_gui_is_dragging, "gui_is_dragging", 0));
     JS_SetPropertyStr(ctx, proto, "gui_is_drag_successful", JS_NewCFunction(ctx, js_Viewport_gui_is_drag_successful, "gui_is_drag_successful", 0));
     JS_SetPropertyStr(ctx, proto, "gui_release_focus", JS_NewCFunction(ctx, js_Viewport_gui_release_focus, "gui_release_focus", 0));
+    JS_SetPropertyStr(ctx, proto, "gui_get_focus_owner", JS_NewCFunction(ctx, js_Viewport_gui_get_focus_owner, "gui_get_focus_owner", 0));
+    JS_SetPropertyStr(ctx, proto, "gui_get_hovered_control", JS_NewCFunction(ctx, js_Viewport_gui_get_hovered_control, "gui_get_hovered_control", 0));
     JS_SetPropertyStr(ctx, proto, "set_disable_input", JS_NewCFunction(ctx, js_Viewport_set_disable_input, "set_disable_input", 1));
     JS_SetPropertyStr(ctx, proto, "is_input_disabled", JS_NewCFunction(ctx, js_Viewport_is_input_disabled, "is_input_disabled", 0));
     JS_SetPropertyStr(ctx, proto, "set_positional_shadow_atlas_size", JS_NewCFunction(ctx, js_Viewport_set_positional_shadow_atlas_size, "set_positional_shadow_atlas_size", 1));
@@ -7663,39 +10501,58 @@ static void quickjs_register_Viewport(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "is_snap_2d_transforms_to_pixel_enabled", JS_NewCFunction(ctx, js_Viewport_is_snap_2d_transforms_to_pixel_enabled, "is_snap_2d_transforms_to_pixel_enabled", 0));
     JS_SetPropertyStr(ctx, proto, "set_snap_2d_vertices_to_pixel", JS_NewCFunction(ctx, js_Viewport_set_snap_2d_vertices_to_pixel, "set_snap_2d_vertices_to_pixel", 1));
     JS_SetPropertyStr(ctx, proto, "is_snap_2d_vertices_to_pixel_enabled", JS_NewCFunction(ctx, js_Viewport_is_snap_2d_vertices_to_pixel_enabled, "is_snap_2d_vertices_to_pixel_enabled", 0));
+    JS_SetPropertyStr(ctx, proto, "set_positional_shadow_atlas_quadrant_subdiv", JS_NewCFunction(ctx, js_Viewport_set_positional_shadow_atlas_quadrant_subdiv, "set_positional_shadow_atlas_quadrant_subdiv", 2));
+    JS_SetPropertyStr(ctx, proto, "get_positional_shadow_atlas_quadrant_subdiv", JS_NewCFunction(ctx, js_Viewport_get_positional_shadow_atlas_quadrant_subdiv, "get_positional_shadow_atlas_quadrant_subdiv", 1));
     JS_SetPropertyStr(ctx, proto, "set_input_as_handled", JS_NewCFunction(ctx, js_Viewport_set_input_as_handled, "set_input_as_handled", 0));
     JS_SetPropertyStr(ctx, proto, "is_input_handled", JS_NewCFunction(ctx, js_Viewport_is_input_handled, "is_input_handled", 0));
     JS_SetPropertyStr(ctx, proto, "set_handle_input_locally", JS_NewCFunction(ctx, js_Viewport_set_handle_input_locally, "set_handle_input_locally", 1));
     JS_SetPropertyStr(ctx, proto, "is_handling_input_locally", JS_NewCFunction(ctx, js_Viewport_is_handling_input_locally, "is_handling_input_locally", 0));
+    JS_SetPropertyStr(ctx, proto, "set_default_canvas_item_texture_filter", JS_NewCFunction(ctx, js_Viewport_set_default_canvas_item_texture_filter, "set_default_canvas_item_texture_filter", 1));
+    JS_SetPropertyStr(ctx, proto, "get_default_canvas_item_texture_filter", JS_NewCFunction(ctx, js_Viewport_get_default_canvas_item_texture_filter, "get_default_canvas_item_texture_filter", 0));
     JS_SetPropertyStr(ctx, proto, "set_embedding_subwindows", JS_NewCFunction(ctx, js_Viewport_set_embedding_subwindows, "set_embedding_subwindows", 1));
     JS_SetPropertyStr(ctx, proto, "is_embedding_subwindows", JS_NewCFunction(ctx, js_Viewport_is_embedding_subwindows, "is_embedding_subwindows", 0));
     JS_SetPropertyStr(ctx, proto, "set_canvas_cull_mask", JS_NewCFunction(ctx, js_Viewport_set_canvas_cull_mask, "set_canvas_cull_mask", 1));
     JS_SetPropertyStr(ctx, proto, "get_canvas_cull_mask", JS_NewCFunction(ctx, js_Viewport_get_canvas_cull_mask, "get_canvas_cull_mask", 0));
     JS_SetPropertyStr(ctx, proto, "set_canvas_cull_mask_bit", JS_NewCFunction(ctx, js_Viewport_set_canvas_cull_mask_bit, "set_canvas_cull_mask_bit", 2));
     JS_SetPropertyStr(ctx, proto, "get_canvas_cull_mask_bit", JS_NewCFunction(ctx, js_Viewport_get_canvas_cull_mask_bit, "get_canvas_cull_mask_bit", 1));
+    JS_SetPropertyStr(ctx, proto, "set_default_canvas_item_texture_repeat", JS_NewCFunction(ctx, js_Viewport_set_default_canvas_item_texture_repeat, "set_default_canvas_item_texture_repeat", 1));
+    JS_SetPropertyStr(ctx, proto, "get_default_canvas_item_texture_repeat", JS_NewCFunction(ctx, js_Viewport_get_default_canvas_item_texture_repeat, "get_default_canvas_item_texture_repeat", 0));
+    JS_SetPropertyStr(ctx, proto, "set_sdf_oversize", JS_NewCFunction(ctx, js_Viewport_set_sdf_oversize, "set_sdf_oversize", 1));
+    JS_SetPropertyStr(ctx, proto, "get_sdf_oversize", JS_NewCFunction(ctx, js_Viewport_get_sdf_oversize, "get_sdf_oversize", 0));
+    JS_SetPropertyStr(ctx, proto, "set_sdf_scale", JS_NewCFunction(ctx, js_Viewport_set_sdf_scale, "set_sdf_scale", 1));
+    JS_SetPropertyStr(ctx, proto, "get_sdf_scale", JS_NewCFunction(ctx, js_Viewport_get_sdf_scale, "get_sdf_scale", 0));
     JS_SetPropertyStr(ctx, proto, "set_mesh_lod_threshold", JS_NewCFunction(ctx, js_Viewport_set_mesh_lod_threshold, "set_mesh_lod_threshold", 1));
     JS_SetPropertyStr(ctx, proto, "get_mesh_lod_threshold", JS_NewCFunction(ctx, js_Viewport_get_mesh_lod_threshold, "get_mesh_lod_threshold", 0));
     JS_SetPropertyStr(ctx, proto, "set_as_audio_listener_2d", JS_NewCFunction(ctx, js_Viewport_set_as_audio_listener_2d, "set_as_audio_listener_2d", 1));
     JS_SetPropertyStr(ctx, proto, "is_audio_listener_2d", JS_NewCFunction(ctx, js_Viewport_is_audio_listener_2d, "is_audio_listener_2d", 0));
     JS_SetPropertyStr(ctx, proto, "set_use_own_world_3d", JS_NewCFunction(ctx, js_Viewport_set_use_own_world_3d, "set_use_own_world_3d", 1));
     JS_SetPropertyStr(ctx, proto, "is_using_own_world_3d", JS_NewCFunction(ctx, js_Viewport_is_using_own_world_3d, "is_using_own_world_3d", 0));
+    JS_SetPropertyStr(ctx, proto, "get_camera_3d", JS_NewCFunction(ctx, js_Viewport_get_camera_3d, "get_camera_3d", 0));
     JS_SetPropertyStr(ctx, proto, "set_as_audio_listener_3d", JS_NewCFunction(ctx, js_Viewport_set_as_audio_listener_3d, "set_as_audio_listener_3d", 1));
     JS_SetPropertyStr(ctx, proto, "is_audio_listener_3d", JS_NewCFunction(ctx, js_Viewport_is_audio_listener_3d, "is_audio_listener_3d", 0));
     JS_SetPropertyStr(ctx, proto, "set_disable_3d", JS_NewCFunction(ctx, js_Viewport_set_disable_3d, "set_disable_3d", 1));
     JS_SetPropertyStr(ctx, proto, "is_3d_disabled", JS_NewCFunction(ctx, js_Viewport_is_3d_disabled, "is_3d_disabled", 0));
     JS_SetPropertyStr(ctx, proto, "set_use_xr", JS_NewCFunction(ctx, js_Viewport_set_use_xr, "set_use_xr", 1));
     JS_SetPropertyStr(ctx, proto, "is_using_xr", JS_NewCFunction(ctx, js_Viewport_is_using_xr, "is_using_xr", 0));
+    JS_SetPropertyStr(ctx, proto, "set_scaling_3d_mode", JS_NewCFunction(ctx, js_Viewport_set_scaling_3d_mode, "set_scaling_3d_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_scaling_3d_mode", JS_NewCFunction(ctx, js_Viewport_get_scaling_3d_mode, "get_scaling_3d_mode", 0));
     JS_SetPropertyStr(ctx, proto, "set_scaling_3d_scale", JS_NewCFunction(ctx, js_Viewport_set_scaling_3d_scale, "set_scaling_3d_scale", 1));
     JS_SetPropertyStr(ctx, proto, "get_scaling_3d_scale", JS_NewCFunction(ctx, js_Viewport_get_scaling_3d_scale, "get_scaling_3d_scale", 0));
     JS_SetPropertyStr(ctx, proto, "set_fsr_sharpness", JS_NewCFunction(ctx, js_Viewport_set_fsr_sharpness, "set_fsr_sharpness", 1));
     JS_SetPropertyStr(ctx, proto, "get_fsr_sharpness", JS_NewCFunction(ctx, js_Viewport_get_fsr_sharpness, "get_fsr_sharpness", 0));
     JS_SetPropertyStr(ctx, proto, "set_texture_mipmap_bias", JS_NewCFunction(ctx, js_Viewport_set_texture_mipmap_bias, "set_texture_mipmap_bias", 1));
     JS_SetPropertyStr(ctx, proto, "get_texture_mipmap_bias", JS_NewCFunction(ctx, js_Viewport_get_texture_mipmap_bias, "get_texture_mipmap_bias", 0));
+    JS_SetPropertyStr(ctx, proto, "set_anisotropic_filtering_level", JS_NewCFunction(ctx, js_Viewport_set_anisotropic_filtering_level, "set_anisotropic_filtering_level", 1));
+    JS_SetPropertyStr(ctx, proto, "get_anisotropic_filtering_level", JS_NewCFunction(ctx, js_Viewport_get_anisotropic_filtering_level, "get_anisotropic_filtering_level", 0));
+    JS_SetPropertyStr(ctx, proto, "set_vrs_mode", JS_NewCFunction(ctx, js_Viewport_set_vrs_mode, "set_vrs_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_vrs_mode", JS_NewCFunction(ctx, js_Viewport_get_vrs_mode, "get_vrs_mode", 0));
+    JS_SetPropertyStr(ctx, proto, "set_vrs_update_mode", JS_NewCFunction(ctx, js_Viewport_set_vrs_update_mode, "set_vrs_update_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_vrs_update_mode", JS_NewCFunction(ctx, js_Viewport_get_vrs_update_mode, "get_vrs_update_mode", 0));
     JS_SetPropertyStr(ctx, global, "_Viewport_proto", proto);
 }
 
 static JSValue js_SubViewport_set_size_2d_override_stretch(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7707,7 +10564,7 @@ static JSValue js_SubViewport_set_size_2d_override_stretch(JSContext *ctx, JSVal
 }
 
 static JSValue js_SubViewport_is_size_2d_override_stretch_enabled(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7715,15 +10572,66 @@ static JSValue js_SubViewport_is_size_2d_override_stretch_enabled(JSContext *ctx
     return JS_NewBool(ctx, (bool)ret);
 }
 
-static void quickjs_register_SubViewport(JSContext *ctx, JSValue global) {
+static JSValue js_SubViewport_set_update_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_update_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_SubViewport_get_update_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_update_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static JSValue js_SubViewport_set_clear_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    int64_t arg0 = js_to_int(ctx, argv[0]);
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_clear_mode", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_SubViewport_get_clear_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_clear_mode", nullptr, 0, ce);
+    return JS_NewInt64(ctx, (int64_t)ret);
+}
+
+static void quickjs_register_SubViewport(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Viewport_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_size_2d_override_stretch", JS_NewCFunction(ctx, js_SubViewport_set_size_2d_override_stretch, "set_size_2d_override_stretch", 1));
     JS_SetPropertyStr(ctx, proto, "is_size_2d_override_stretch_enabled", JS_NewCFunction(ctx, js_SubViewport_is_size_2d_override_stretch_enabled, "is_size_2d_override_stretch_enabled", 0));
+    JS_SetPropertyStr(ctx, proto, "set_update_mode", JS_NewCFunction(ctx, js_SubViewport_set_update_mode, "set_update_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_update_mode", JS_NewCFunction(ctx, js_SubViewport_get_update_mode, "get_update_mode", 0));
+    JS_SetPropertyStr(ctx, proto, "set_clear_mode", JS_NewCFunction(ctx, js_SubViewport_set_clear_mode, "set_clear_mode", 1));
+    JS_SetPropertyStr(ctx, proto, "get_clear_mode", JS_NewCFunction(ctx, js_SubViewport_get_clear_mode, "get_clear_mode", 0));
     JS_SetPropertyStr(ctx, global, "_SubViewport_proto", proto);
 }
 
 static JSValue js_CanvasLayer_set_layer(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     int64_t arg0 = js_to_int(ctx, argv[0]);
@@ -7735,7 +10643,7 @@ static JSValue js_CanvasLayer_set_layer(JSContext *ctx, JSValueConst this_val, i
 }
 
 static JSValue js_CanvasLayer_get_layer(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7744,7 +10652,7 @@ static JSValue js_CanvasLayer_get_layer(JSContext *ctx, JSValueConst this_val, i
 }
 
 static JSValue js_CanvasLayer_set_visible(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7756,7 +10664,7 @@ static JSValue js_CanvasLayer_set_visible(JSContext *ctx, JSValueConst this_val,
 }
 
 static JSValue js_CanvasLayer_is_visible(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7765,7 +10673,7 @@ static JSValue js_CanvasLayer_is_visible(JSContext *ctx, JSValueConst this_val, 
 }
 
 static JSValue js_CanvasLayer_show(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7774,7 +10682,7 @@ static JSValue js_CanvasLayer_show(JSContext *ctx, JSValueConst this_val, int ar
 }
 
 static JSValue js_CanvasLayer_hide(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7783,7 +10691,7 @@ static JSValue js_CanvasLayer_hide(JSContext *ctx, JSValueConst this_val, int ar
 }
 
 static JSValue js_CanvasLayer_set_rotation(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -7795,7 +10703,7 @@ static JSValue js_CanvasLayer_set_rotation(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_CanvasLayer_get_rotation(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7804,7 +10712,7 @@ static JSValue js_CanvasLayer_get_rotation(JSContext *ctx, JSValueConst this_val
 }
 
 static JSValue js_CanvasLayer_set_follow_viewport(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     bool arg0 = JS_ToBool(ctx, argv[0]);
@@ -7816,7 +10724,7 @@ static JSValue js_CanvasLayer_set_follow_viewport(JSContext *ctx, JSValueConst t
 }
 
 static JSValue js_CanvasLayer_is_following_viewport(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7825,7 +10733,7 @@ static JSValue js_CanvasLayer_is_following_viewport(JSContext *ctx, JSValueConst
 }
 
 static JSValue js_CanvasLayer_set_follow_viewport_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     double arg0 = js_to_float(ctx, argv[0]);
@@ -7837,7 +10745,7 @@ static JSValue js_CanvasLayer_set_follow_viewport_scale(JSContext *ctx, JSValueC
 }
 
 static JSValue js_CanvasLayer_get_follow_viewport_scale(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, 1));
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
     if (!obj) return JS_EXCEPTION;
 
     Callable::CallError ce;
@@ -7845,8 +10753,40 @@ static JSValue js_CanvasLayer_get_follow_viewport_scale(JSContext *ctx, JSValueC
     return JS_NewFloat64(ctx, (double)ret);
 }
 
-static void quickjs_register_CanvasLayer(JSContext *ctx, JSValue global) {
+static JSValue js_CanvasLayer_set_custom_viewport(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Object *arg0 = static_cast<Object *>(JS_GetOpaque(argv[0], godot_obj_class_id));
+    Callable::CallError ce;
+    Variant args[] = { Variant(arg0) };
+    const Variant *argptrs[] = { &args[0] };
+    obj->callp("set_custom_viewport", argptrs, 1, ce);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_CanvasLayer_get_custom_viewport(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    Object *obj = static_cast<Object *>(JS_GetOpaque(this_val, godot_obj_class_id));
+    if (!obj) return JS_EXCEPTION;
+
+    Callable::CallError ce;
+    Variant ret = obj->callp("get_custom_viewport", nullptr, 0, ce);
+    Object *ret_obj = ret.operator Object *();
+    return wrap_godot_object(ctx, ret_obj);
+}
+
+static JSValue js_CanvasLayer_constructor(JSContext *ctx, JSValueConst new_target, int argc, JSValueConst *argv) {
+    Object *obj = ClassDB::instantiate("CanvasLayer");
+    return wrap_godot_object(ctx, obj);
+}
+
+static void quickjs_register_CanvasLayer(JSContext *ctx, JSValue global, JSValue engine_ns) {
     JSValue proto = JS_NewObject(ctx);
+    JSValue parent_proto = JS_GetPropertyStr(ctx, global, "_Node_proto");
+    if (!JS_IsUndefined(parent_proto)) {
+        JS_SetPrototype(ctx, proto, parent_proto);
+    }
+    JS_FreeValue(ctx, parent_proto);
     JS_SetPropertyStr(ctx, proto, "set_layer", JS_NewCFunction(ctx, js_CanvasLayer_set_layer, "set_layer", 1));
     JS_SetPropertyStr(ctx, proto, "get_layer", JS_NewCFunction(ctx, js_CanvasLayer_get_layer, "get_layer", 0));
     JS_SetPropertyStr(ctx, proto, "set_visible", JS_NewCFunction(ctx, js_CanvasLayer_set_visible, "set_visible", 1));
@@ -7859,43 +10799,57 @@ static void quickjs_register_CanvasLayer(JSContext *ctx, JSValue global) {
     JS_SetPropertyStr(ctx, proto, "is_following_viewport", JS_NewCFunction(ctx, js_CanvasLayer_is_following_viewport, "is_following_viewport", 0));
     JS_SetPropertyStr(ctx, proto, "set_follow_viewport_scale", JS_NewCFunction(ctx, js_CanvasLayer_set_follow_viewport_scale, "set_follow_viewport_scale", 1));
     JS_SetPropertyStr(ctx, proto, "get_follow_viewport_scale", JS_NewCFunction(ctx, js_CanvasLayer_get_follow_viewport_scale, "get_follow_viewport_scale", 0));
+    JS_SetPropertyStr(ctx, proto, "set_custom_viewport", JS_NewCFunction(ctx, js_CanvasLayer_set_custom_viewport, "set_custom_viewport", 1));
+    JS_SetPropertyStr(ctx, proto, "get_custom_viewport", JS_NewCFunction(ctx, js_CanvasLayer_get_custom_viewport, "get_custom_viewport", 0));
     JS_SetPropertyStr(ctx, global, "_CanvasLayer_proto", proto);
+    JSValue ctor = JS_NewCFunction2(ctx, js_CanvasLayer_constructor, "CanvasLayer", 0, JS_CFUNC_constructor, 0);
+    JS_SetPropertyStr(ctx, ctor, "prototype", JS_DupValue(ctx, proto));
+    JS_SetPropertyStr(ctx, engine_ns, "CanvasLayer", ctor);
 }
 
 void quickjs_register_generated_bindings(JSContext *ctx, JSValue global) {
-    quickjs_register_Node(ctx, global);
-    quickjs_register_Node2D(ctx, global);
-    quickjs_register_Node3D(ctx, global);
-    quickjs_register_Camera3D(ctx, global);
-    quickjs_register_MeshInstance3D(ctx, global);
-    quickjs_register_DirectionalLight3D(ctx, global);
-    quickjs_register_OmniLight3D(ctx, global);
-    quickjs_register_SpotLight3D(ctx, global);
-    quickjs_register_WorldEnvironment(ctx, global);
-    quickjs_register_RigidBody3D(ctx, global);
-    quickjs_register_StaticBody3D(ctx, global);
-    quickjs_register_CharacterBody3D(ctx, global);
-    quickjs_register_CollisionShape3D(ctx, global);
-    quickjs_register_Area3D(ctx, global);
-    quickjs_register_AnimationPlayer(ctx, global);
-    quickjs_register_AnimationTree(ctx, global);
-    quickjs_register_AudioStreamPlayer3D(ctx, global);
-    quickjs_register_AudioStreamPlayer(ctx, global);
-    quickjs_register_NavigationAgent3D(ctx, global);
-    quickjs_register_NavigationRegion3D(ctx, global);
-    quickjs_register_Timer(ctx, global);
-    quickjs_register_RayCast3D(ctx, global);
-    quickjs_register_Control(ctx, global);
-    quickjs_register_Label(ctx, global);
-    quickjs_register_Button(ctx, global);
-    quickjs_register_TextureRect(ctx, global);
-    quickjs_register_ProgressBar(ctx, global);
-    quickjs_register_Panel(ctx, global);
-    quickjs_register_VBoxContainer(ctx, global);
-    quickjs_register_HBoxContainer(ctx, global);
-    quickjs_register_GridContainer(ctx, global);
-    quickjs_register_SceneTree(ctx, global);
-    quickjs_register_Viewport(ctx, global);
-    quickjs_register_SubViewport(ctx, global);
-    quickjs_register_CanvasLayer(ctx, global);
+    // Register Godot object class
+    JS_NewClassID(&godot_obj_class_id);
+    JS_NewClass(JS_GetRuntime(ctx), godot_obj_class_id, &godot_obj_class_def);
+
+    // Create Engine namespace
+    JSValue engine_ns = JS_NewObject(ctx);
+
+    quickjs_register_Node(ctx, global, engine_ns);
+    quickjs_register_Node2D(ctx, global, engine_ns);
+    quickjs_register_Node3D(ctx, global, engine_ns);
+    quickjs_register_Camera3D(ctx, global, engine_ns);
+    quickjs_register_MeshInstance3D(ctx, global, engine_ns);
+    quickjs_register_DirectionalLight3D(ctx, global, engine_ns);
+    quickjs_register_OmniLight3D(ctx, global, engine_ns);
+    quickjs_register_SpotLight3D(ctx, global, engine_ns);
+    quickjs_register_WorldEnvironment(ctx, global, engine_ns);
+    quickjs_register_RigidBody3D(ctx, global, engine_ns);
+    quickjs_register_StaticBody3D(ctx, global, engine_ns);
+    quickjs_register_CharacterBody3D(ctx, global, engine_ns);
+    quickjs_register_CollisionShape3D(ctx, global, engine_ns);
+    quickjs_register_Area3D(ctx, global, engine_ns);
+    quickjs_register_AnimationPlayer(ctx, global, engine_ns);
+    quickjs_register_AnimationTree(ctx, global, engine_ns);
+    quickjs_register_AudioStreamPlayer3D(ctx, global, engine_ns);
+    quickjs_register_AudioStreamPlayer(ctx, global, engine_ns);
+    quickjs_register_NavigationAgent3D(ctx, global, engine_ns);
+    quickjs_register_NavigationRegion3D(ctx, global, engine_ns);
+    quickjs_register_Timer(ctx, global, engine_ns);
+    quickjs_register_RayCast3D(ctx, global, engine_ns);
+    quickjs_register_Control(ctx, global, engine_ns);
+    quickjs_register_Label(ctx, global, engine_ns);
+    quickjs_register_Button(ctx, global, engine_ns);
+    quickjs_register_TextureRect(ctx, global, engine_ns);
+    quickjs_register_ProgressBar(ctx, global, engine_ns);
+    quickjs_register_Panel(ctx, global, engine_ns);
+    quickjs_register_VBoxContainer(ctx, global, engine_ns);
+    quickjs_register_HBoxContainer(ctx, global, engine_ns);
+    quickjs_register_GridContainer(ctx, global, engine_ns);
+    quickjs_register_SceneTree(ctx, global, engine_ns);
+    quickjs_register_Viewport(ctx, global, engine_ns);
+    quickjs_register_SubViewport(ctx, global, engine_ns);
+    quickjs_register_CanvasLayer(ctx, global, engine_ns);
+
+    JS_SetPropertyStr(ctx, global, "Engine", engine_ns);
 }

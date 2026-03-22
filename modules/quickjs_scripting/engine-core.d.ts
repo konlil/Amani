@@ -106,7 +106,8 @@ declare namespace Engine {
     type PackedColorArray = Color[];
     type PackedVector4Array = Vector4[];
 
-    interface Node {
+    class Node {
+        constructor();
         name: string;
         unique_name_in_owner: boolean;
         scene_file_path: string;
@@ -247,7 +248,8 @@ declare namespace Engine {
         editor_state_changed: Signal;
     }
 
-    interface Node2D {
+    class Node2D extends Node {
+        constructor();
         position: Vector2;
         rotation: number;
         rotation_degrees: number;
@@ -295,7 +297,8 @@ declare namespace Engine {
         get_relative_transform_to_parent(parent: Node): Transform2D;
     }
 
-    interface Node3D extends Node {
+    class Node3D extends Node {
+        constructor();
         transform: Transform3D;
         global_transform: Transform3D;
         position: Vector3;
@@ -387,11 +390,12 @@ declare namespace Engine {
         visibility_changed: Signal;
     }
 
-    interface Camera3D extends Node3D {
+    class Camera3D extends Node3D {
+        constructor();
         keep_aspect: number;
         cull_mask: number;
         environment: Environment;
-        attributes: CameraAttributesPractical,CameraAttributesPhysical;
+        attributes: any;
         compositor: Compositor;
         h_offset: number;
         v_offset: number;
@@ -454,7 +458,8 @@ declare namespace Engine {
         get_cull_mask_value(layer_number: number): boolean;
     }
 
-    interface MeshInstance3D {
+    class MeshInstance3D extends Node3D {
+        constructor();
         mesh: Mesh;
         skin: Skin;
         skeleton: string;
@@ -481,7 +486,8 @@ declare namespace Engine {
         bake_mesh_from_current_skeleton_pose(existing?: ArrayMesh): ArrayMesh;
     }
 
-    interface DirectionalLight3D {
+    class DirectionalLight3D extends Node3D {
+        constructor();
         directional_shadow_mode: number;
         directional_shadow_split_1: number;
         directional_shadow_split_2: number;
@@ -499,7 +505,8 @@ declare namespace Engine {
         get_sky_mode(): number;
     }
 
-    interface OmniLight3D {
+    class OmniLight3D extends Node3D {
+        constructor();
         omni_range: number;
         omni_attenuation: number;
         omni_shadow_mode: number;
@@ -507,16 +514,18 @@ declare namespace Engine {
         get_shadow_mode(): number;
     }
 
-    interface SpotLight3D {
+    class SpotLight3D extends Node3D {
+        constructor();
         spot_range: number;
         spot_attenuation: number;
         spot_angle: number;
         spot_angle_attenuation: number;
     }
 
-    interface WorldEnvironment extends Node {
+    class WorldEnvironment extends Node {
+        constructor();
         environment: Environment;
-        camera_attributes: CameraAttributesPractical,CameraAttributesPhysical;
+        camera_attributes: any;
         compositor: Compositor;
         set_environment(env: Environment): void;
         get_environment(): Environment;
@@ -526,7 +535,8 @@ declare namespace Engine {
         get_compositor(): Compositor;
     }
 
-    interface RigidBody3D {
+    class RigidBody3D extends Node3D {
+        constructor();
         mass: number;
         physics_material_override: PhysicsMaterial;
         gravity_scale: number;
@@ -616,7 +626,8 @@ declare namespace Engine {
         sleeping_state_changed: Signal;
     }
 
-    interface StaticBody3D {
+    class StaticBody3D extends Node3D {
+        constructor();
         physics_material_override: PhysicsMaterial;
         constant_linear_velocity: Vector3;
         constant_angular_velocity: Vector3;
@@ -628,7 +639,8 @@ declare namespace Engine {
         get_physics_material_override(): PhysicsMaterial;
     }
 
-    interface CharacterBody3D {
+    class CharacterBody3D extends Node3D {
+        constructor();
         motion_mode: number;
         up_direction: Vector3;
         slide_on_ceiling: boolean;
@@ -695,7 +707,8 @@ declare namespace Engine {
         get_last_slide_collision(): KinematicCollision3D;
     }
 
-    interface CollisionShape3D extends Node3D {
+    class CollisionShape3D extends Node3D {
+        constructor();
         shape: Shape3D;
         disabled: boolean;
         debug_color: Color;
@@ -712,7 +725,8 @@ declare namespace Engine {
         get_enable_debug_fill(): boolean;
     }
 
-    interface Area3D {
+    class Area3D extends Node3D {
+        constructor();
         monitoring: boolean;
         monitorable: boolean;
         priority: number;
@@ -795,7 +809,8 @@ declare namespace Engine {
         area_exited: Signal;
     }
 
-    interface AnimationPlayer {
+    class AnimationPlayer extends Node {
+        constructor();
         current_animation: string;
         assigned_animation: string;
         autoplay: string;
@@ -865,7 +880,8 @@ declare namespace Engine {
         animation_changed: Signal;
     }
 
-    interface AnimationTree {
+    class AnimationTree extends Node {
+        constructor();
         tree_root: AnimationRootNode;
         advance_expression_base_node: string;
         anim_player: string;
@@ -880,7 +896,8 @@ declare namespace Engine {
         animation_player_changed: Signal;
     }
 
-    interface AudioStreamPlayer3D extends Node3D {
+    class AudioStreamPlayer3D extends Node3D {
+        constructor();
         stream: AudioStream;
         attenuation_model: number;
         volume_db: number;
@@ -956,7 +973,8 @@ declare namespace Engine {
         finished: Signal;
     }
 
-    interface AudioStreamPlayer extends Node {
+    class AudioStreamPlayer extends Node {
+        constructor();
         stream: AudioStream;
         volume_db: number;
         volume_linear: number;
@@ -999,7 +1017,8 @@ declare namespace Engine {
         finished: Signal;
     }
 
-    interface NavigationAgent3D extends Node {
+    class NavigationAgent3D extends Node {
+        constructor();
         target_position: Vector3;
         path_desired_distance: number;
         target_desired_distance: number;
@@ -1114,7 +1133,8 @@ declare namespace Engine {
         velocity_computed: Signal;
     }
 
-    interface NavigationRegion3D extends Node3D {
+    class NavigationRegion3D extends Node3D {
+        constructor();
         navigation_mesh: NavigationMesh;
         enabled: boolean;
         use_edge_connections: boolean;
@@ -1146,7 +1166,8 @@ declare namespace Engine {
         bake_finished: Signal;
     }
 
-    interface Timer extends Node {
+    class Timer extends Node {
+        constructor();
         process_callback: number;
         wait_time: number;
         one_shot: boolean;
@@ -1173,7 +1194,8 @@ declare namespace Engine {
         timeout: Signal;
     }
 
-    interface RayCast3D extends Node3D {
+    class RayCast3D extends Node3D {
+        constructor();
         enabled: boolean;
         exclude_parent: boolean;
         target_position: Vector3;
@@ -1221,7 +1243,8 @@ declare namespace Engine {
         get_debug_shape_thickness(): number;
     }
 
-    interface Control {
+    class Control extends Node {
+        constructor();
         clip_contents: boolean;
         custom_minimum_size: Vector2;
         layout_direction: number;
@@ -1405,7 +1428,8 @@ declare namespace Engine {
         theme_changed: Signal;
     }
 
-    interface Label extends Control {
+    class Label extends Control {
+        constructor();
         text: string;
         label_settings: LabelSettings;
         horizontal_alignment: number;
@@ -1476,7 +1500,8 @@ declare namespace Engine {
         get_character_bounds(pos: number): Rect2;
     }
 
-    interface Button {
+    class Button extends Control {
+        constructor();
         text: string;
         icon: Texture2D;
         flat: boolean;
@@ -1515,7 +1540,8 @@ declare namespace Engine {
         is_expand_icon(): boolean;
     }
 
-    interface TextureRect extends Control {
+    class TextureRect extends Control {
+        constructor();
         texture: Texture2D;
         expand_mode: number;
         stretch_mode: number;
@@ -1533,7 +1559,8 @@ declare namespace Engine {
         get_stretch_mode(): number;
     }
 
-    interface ProgressBar {
+    class ProgressBar extends Control {
+        constructor();
         fill_mode: number;
         show_percentage: boolean;
         indeterminate: boolean;
@@ -1548,22 +1575,26 @@ declare namespace Engine {
         is_editor_preview_indeterminate_enabled(): boolean;
     }
 
-    interface Panel extends Control {
+    class Panel extends Control {
+        constructor();
     }
 
-    interface VBoxContainer {
+    class VBoxContainer extends Control {
+        constructor();
     }
 
-    interface HBoxContainer {
+    class HBoxContainer extends Control {
+        constructor();
     }
 
-    interface GridContainer {
+    class GridContainer extends Control {
+        constructor();
         columns: number;
         set_columns(columns: number): void;
         get_columns(): number;
     }
 
-    interface SceneTree {
+    class SceneTree {
         auto_accept_quit: boolean;
         quit_on_go_back: boolean;
         debug_collisions_hint: boolean;
@@ -1627,7 +1658,7 @@ declare namespace Engine {
         physics_frame: Signal;
     }
 
-    interface Viewport extends Node {
+    class Viewport extends Node {
         disable_3d: boolean;
         use_xr: boolean;
         own_world_3d: boolean;
@@ -1800,7 +1831,7 @@ declare namespace Engine {
         gui_focus_changed: Signal;
     }
 
-    interface SubViewport extends Viewport {
+    class SubViewport extends Viewport {
         size: Vector2i;
         size_2d_override: Vector2i;
         size_2d_override_stretch: boolean;
@@ -1818,7 +1849,8 @@ declare namespace Engine {
         get_clear_mode(): number;
     }
 
-    interface CanvasLayer extends Node {
+    class CanvasLayer extends Node {
+        constructor();
         layer: number;
         visible: boolean;
         offset: Vector2;
@@ -1852,5 +1884,12 @@ declare namespace Engine {
         get_canvas(): RID;
         visibility_changed: Signal;
     }
+
+    function getSceneRoot(): Node;
+    function onProcess(callback: (delta: number) => void): void;
+    function createResource(className: string): any;
+    function setProperty(obj: any, name: string, value: any): void;
+    function getProperty(obj: any, name: string): any;
+    function callMethod(obj: any, methodName: string, ...args: any[]): any;
 
 }

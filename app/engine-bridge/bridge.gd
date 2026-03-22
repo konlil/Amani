@@ -32,6 +32,7 @@ func _ready():
 	# Initialize QuickJS runtime
 	runtime = QuickJSRuntime.new()
 	runtime.initialize()
+	runtime.set_scene_root(get_tree().root)
 
 	if not js_file.is_empty():
 		_execute_and_screenshot()
@@ -43,6 +44,10 @@ func _ready():
 		add_child(timer)
 		timer.start()
 		print('{"type":"ready","project_dir":"' + project_dir + '"}')
+
+func _process(delta):
+	if runtime and runtime.is_initialized():
+		runtime.tick_process(delta)
 
 func _execute_and_screenshot():
 	# Load and execute JS
@@ -58,9 +63,11 @@ func _execute_and_screenshot():
 	var result = runtime.eval_string(js_code, js_file.get_file())
 	print('{"type":"execute_result","result":"' + str(result).replace('"', '\\"') + '"}')
 
-	# Wait 2 frames for scene to render, then screenshot
-	await get_tree().process_frame
-	await get_tree().process_frame
+	# Wait several frames for deferred add_child + rendering pipeline
+	# Call tick_process manually since _process may not fire during _ready await
+	for i in range(5):
+		runtime.tick_process(get_process_delta_time())
+		await get_tree().process_frame
 
 	var screenshot_path = coordinator.take_screenshot()
 	print('{"type":"screenshot","path":"' + screenshot_path + '"}')
