@@ -5,4 +5,24 @@ Import("env_modules")
 
 env_quickjs = env_modules.Clone()
 
+# QuickJS thirdparty sources
+thirdparty_dir = "thirdparty/quickjs/"
+thirdparty_sources = [
+    "quickjs.c",
+    "cutils.c",
+    "dtoa.c",
+    "libregexp.c",
+    "libunicode.c",
+    "quickjs-libc.c",
+]
+thirdparty_sources = [thirdparty_dir + f for f in thirdparty_sources]
+
+env_thirdparty = env_quickjs.Clone()
+env_thirdparty.disable_warnings()
+env_thirdparty.Append(CPPDEFINES=[('CONFIG_VERSION', '\\"2025-09-13\\"')])
+env_thirdparty.Append(CPPPATH=[thirdparty_dir])
+env_thirdparty.add_source_files(env.modules_sources, thirdparty_sources)
+
+# Module sources
+env_quickjs.Append(CPPPATH=[thirdparty_dir])
 env_quickjs.add_source_files(env.modules_sources, "*.cpp")
