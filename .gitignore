@@ -27,3 +27,9 @@
 .zencoder/
 skills/
 skills-lock.json
+
+# Build artifacts
+*.o
+*.a
+*.pyc
+__pycache__/
