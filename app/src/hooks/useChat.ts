@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../stores/appStore";
 import { chatCompletion, extractCodeBlocks } from "../services/llm";
-import { writeProjectFile, compileProject, createProject } from "../services/engine";
+import { writeProjectFile, compileProject, createProject, startEngine, sendEngineCommand, getEngineStatus } from "../services/engine";
 import { homeDir } from "@tauri-apps/api/path";
 
 const ENGINE_DTS_CONTEXT = `You are a game development assistant for LLM3dEngine.
@@ -102,6 +102,26 @@ export function useChat() {
           codeBlocks,
           compileResult: result,
         });
+
+        // If compile succeeded and engine path is configured, start engine and run
+        if (result.success) {
+          const { llmConfig, engineRunning, setEngineRunning } = useAppStore.getState();
+          if (llmConfig.engine_path) {
+            try {
+              if (!engineRunning) {
+                await startEngine(llmConfig.engine_path, project.path);
+                setEngineRunning(true);
+                // Wait for engine to be ready
+                await new Promise((r) => setTimeout(r, 2000));
+              }
+              // Send compile_and_run command
+              await sendEngineCommand({ action: "compile_and_run" });
+              console.log("[useChat] sent compile_and_run to engine");
+            } catch (e) {
+              console.error("[useChat] engine error:", e);
+            }
+          }
+        }
       }
     } catch (err) {
       console.error("[useChat] error:", err);

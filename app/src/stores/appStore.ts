@@ -73,6 +73,7 @@ export const useAppStore = create<AppState>()(
     api_key: "",
     endpoint: "https://api.openai.com/v1",
     model: "gpt-4",
+    engine_path: "",
   },
   setLlmConfig: (config) => set({ llmConfig: config }),
 

@@ -6,9 +6,10 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   const [apiKey, setApiKey] = useState(llmConfig.api_key);
   const [endpoint, setEndpoint] = useState(llmConfig.endpoint);
   const [model, setModel] = useState(llmConfig.model);
+  const [enginePath, setEnginePath] = useState(llmConfig.engine_path);
 
   const handleSave = () => {
-    setLlmConfig({ api_key: apiKey, endpoint, model });
+    setLlmConfig({ api_key: apiKey, endpoint, model, engine_path: enginePath });
     onClose();
   };
 
@@ -39,6 +40,14 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
             value={model}
             onChange={(e) => setModel(e.target.value)}
             placeholder="gpt-4"
+          />
+        </div>
+        <div className="modal-field">
+          <label>引擎路径</label>
+          <input
+            value={enginePath}
+            onChange={(e) => setEnginePath(e.target.value)}
+            placeholder="/path/to/godot.macos.template_release.arm64"
           />
         </div>
         <div className="modal-actions">

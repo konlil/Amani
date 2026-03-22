@@ -3,9 +3,9 @@ import type { EngineStatus, CompileResult, ProjectInfo } from "../types";
 
 export async function startEngine(
   enginePath: string,
-  projectPath: string
+  gameProjectPath: string
 ): Promise<string> {
-  return invoke<string>("start_engine", { enginePath, projectPath });
+  return invoke<string>("start_engine", { enginePath, gameProjectPath });
 }
 
 export async function stopEngine(): Promise<string> {
@@ -14,9 +14,13 @@ export async function stopEngine(): Promise<string> {
 
 export async function restartEngine(
   enginePath: string,
-  projectPath: string
+  gameProjectPath: string
 ): Promise<string> {
-  return invoke<string>("restart_engine", { enginePath, projectPath });
+  return invoke<string>("restart_engine", { enginePath, gameProjectPath });
+}
+
+export async function sendEngineCommand(command: Record<string, unknown>): Promise<void> {
+  return invoke("send_engine_command", { command });
 }
 
 export async function getEngineStatus(): Promise<EngineStatus> {

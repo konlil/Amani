@@ -23,6 +23,7 @@ export interface LlmConfig {
   api_key: string;
   endpoint: string;
   model: string;
+  engine_path: string;
 }
 
 export interface ProjectInfo {

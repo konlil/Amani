@@ -1,7 +1,43 @@
+import { useEffect } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { useAppStore } from "../../stores/appStore";
 
 export default function PreviewPanel() {
-  const { screenshotUrl, engineRunning } = useAppStore();
+  const { screenshotUrl, engineRunning, setScreenshotUrl, setEngineRunning } =
+    useAppStore();
+
+  useEffect(() => {
+    // Listen for engine responses containing screenshots
+    const unlistenResponse = listen<Record<string, unknown>>(
+      "engine-response",
+      (event) => {
+        const data = event.payload;
+        console.log("[preview] engine response:", data);
+
+        // Handle screenshot from compile_and_run or screenshot command
+        const screenshotPath =
+          (data.screenshot as string) ??
+          (data.type === "screenshot" ? (data.path as string) : null);
+
+        if (screenshotPath) {
+          // Convert local file path to Tauri asset URL
+          const url = convertFileSrc(screenshotPath);
+          setScreenshotUrl(url + "?t=" + Date.now());
+        }
+      }
+    );
+
+    const unlistenStopped = listen("engine-stopped", () => {
+      console.log("[preview] engine stopped");
+      setEngineRunning(false);
+    });
+
+    return () => {
+      unlistenResponse.then((f) => f());
+      unlistenStopped.then((f) => f());
+    };
+  }, [setScreenshotUrl, setEngineRunning]);
 
   return (
     <div className="preview-panel">

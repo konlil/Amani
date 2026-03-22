@@ -1,0 +1,12 @@
+; LLM3dEngine bridge project
+; Launched by Tauri to provide engine services
+
+[application]
+
+config/name="LLM3dEngine Bridge"
+run/main_scene="res://bridge.tscn"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
