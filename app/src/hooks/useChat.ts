@@ -1,18 +1,34 @@
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../stores/appStore";
 import { chatCompletion, extractCodeBlocks } from "../services/llm";
-import { writeProjectFile, compileProject, createProject, startEngine, sendEngineCommand, pollEngineResult } from "../services/engine";
+import { writeProjectFile, compileProject, createProject, startEngine, sendEngineCommand, pollEngineResult, getEngineDts } from "../services/engine";
 import { homeDir } from "@tauri-apps/api/path";
 
-const ENGINE_DTS_CONTEXT = `You are a game development assistant for LLM3dEngine.
+const SYSTEM_PROMPT_PREFIX = `You are a game development assistant for LLM3dEngine.
 The engine uses TypeScript compiled to JavaScript and executed via QuickJS.
-Engine is a global object — use Engine.* directly (e.g. Engine.Node3D, Engine.SceneTree).
+Engine is a global object — use Engine.* directly as values (e.g. new Engine.Node3D()).
 Do NOT use import statements. All engine APIs are available globally via the Engine namespace.
-When generating code, wrap it in a code block with the target filename, e.g.:
-\`\`\`typescript // scripts/enemy.ts
+Only use APIs that exist in the type definitions below. Do NOT invent APIs.
+When generating code, wrap it in a code block with the target filename:
+\`\`\`typescript // scripts/main.ts
 // code here
 \`\`\`
+
+Here are the available Engine APIs:
 `;
+
+let cachedSystemPrompt: string | null = null;
+
+async function getSystemPrompt(): Promise<string> {
+  if (cachedSystemPrompt) return cachedSystemPrompt;
+  try {
+    const dts = await getEngineDts();
+    cachedSystemPrompt = SYSTEM_PROMPT_PREFIX + "\n```typescript\n" + dts + "\n```";
+  } catch {
+    cachedSystemPrompt = SYSTEM_PROMPT_PREFIX + "\n(engine type definitions unavailable)";
+  }
+  return cachedSystemPrompt;
+}
 
 export function useChat() {
   const sendMessage = async (userText: string) => {
@@ -60,10 +76,11 @@ export function useChat() {
         apiMessages.pop();
       }
 
+      const systemPrompt = await getSystemPrompt();
       const fullResponse = await chatCompletion(
         store.llmConfig,
         apiMessages,
-        ENGINE_DTS_CONTEXT
+        systemPrompt
       );
       console.log("[useChat] LLM response received, length:", fullResponse.length);
 

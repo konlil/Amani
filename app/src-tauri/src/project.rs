@@ -5,6 +5,12 @@ use tokio::process::Command;
 
 const ENGINE_CORE_DTS: &str = include_str!("../../../modules/quickjs_scripting/engine-core.d.ts");
 
+/// Return the engine-core.d.ts content for use as LLM context
+#[tauri::command]
+pub fn get_engine_dts() -> String {
+    ENGINE_CORE_DTS.to_string()
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProjectInfo {
     pub name: String,
@@ -149,7 +155,6 @@ pub async fn compile_project(project_path: String) -> Result<CompileResult, Stri
     };
 
     let output = Command::new(&tsc_cmd)
-        .arg("--noEmit")
         .arg("--pretty")
         .arg("--project")
         .arg(project_dir.join("tsconfig.json"))

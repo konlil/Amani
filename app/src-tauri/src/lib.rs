@@ -22,6 +22,7 @@ pub fn run() {
             project::write_project_file,
             project::read_project_file,
             project::compile_project,
+            project::get_engine_dts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

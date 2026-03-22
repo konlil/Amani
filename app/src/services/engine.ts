@@ -62,3 +62,7 @@ export async function compileProject(
 ): Promise<CompileResult> {
   return invoke<CompileResult>("compile_project", { projectPath });
 }
+
+export async function getEngineDts(): Promise<string> {
+  return invoke<string>("get_engine_dts");
+}
