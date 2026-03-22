@@ -107,14 +107,52 @@ export function useChat() {
           await writeProjectFile(project.path, block.filename, block.code);
         }
 
-        const result = await compileProject(project.path);
+        let result = await compileProject(project.path);
+
+        // Auto-retry: if compile fails, send errors back to LLM to fix (up to 3 attempts)
+        const MAX_RETRIES = 3;
+        let attempt = 0;
+        while (!result.success && attempt < MAX_RETRIES) {
+          attempt++;
+          console.log(`[useChat] compile failed, auto-fix attempt ${attempt}/${MAX_RETRIES}`);
+
+          useAppStore.getState().appendToLastAssistant(
+            `\n\n编译失败，正在自动修复 (${attempt}/${MAX_RETRIES})...`
+          );
+
+          // Send errors back to LLM
+          const fixMessages = [
+            ...apiMessages,
+            { role: "assistant", content: fullResponse },
+            {
+              role: "user",
+              content: `编译失败，请修复以下错误。只输出修复后的完整代码，不要解释：\n${result.errors.join("\n")}\n\n完整编译输出：\n${result.output}`,
+            },
+          ];
+
+          const fixResponse = await chatCompletion(
+            store.llmConfig,
+            fixMessages,
+            systemPrompt
+          );
+
+          const fixBlocks = extractCodeBlocks(fixResponse);
+          if (fixBlocks.length > 0) {
+            for (const block of fixBlocks) {
+              await writeProjectFile(project.path, block.filename, block.code);
+            }
+            result = await compileProject(project.path);
+          } else {
+            break; // LLM didn't return code blocks, stop retrying
+          }
+        }
 
         useAppStore.getState().addMessage({
           id: crypto.randomUUID(),
           role: "assistant",
           content: result.success
             ? "代码已编译成功，场景已更新。"
-            : `编译失败：\n${result.errors.join("\n")}`,
+            : `编译失败（已尝试 ${attempt} 次自动修复）：\n${result.errors.join("\n")}`,
           timestamp: Date.now(),
           codeBlocks,
           compileResult: result,
