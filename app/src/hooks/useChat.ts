@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../stores/appStore";
 import { chatCompletion, extractCodeBlocks } from "../services/llm";
-import { writeProjectFile, compileProject, createProject, startEngine, sendEngineCommand, pollEngineResult, getEngineDts } from "../services/engine";
+import { writeProjectFile, compileProject, createProject, startEngine, sendEngineCommand, waitForEngineResponse, getEngineDts } from "../services/engine";
 import { homeDir } from "@tauri-apps/api/path";
 
 const SYSTEM_PROMPT_PREFIX = `You are a game development assistant for LLM3dEngine.
@@ -190,22 +190,17 @@ export function useChat() {
               if (!engineRunning) {
                 await startEngine(llmConfig.engine_path, project.path);
                 setEngineRunning(true);
-                // Wait for engine to be ready
-                await new Promise((r) => setTimeout(r, 3000));
               }
-              // Send compile_and_run command via file
-              await sendEngineCommand({ action: "compile_and_run" });
+              const requestId = crypto.randomUUID();
+              await sendEngineCommand({ action: "compile_and_run", request_id: requestId });
               console.log("[useChat] sent compile_and_run to engine");
-
-              // Poll for result (up to 15 seconds)
-              for (let i = 0; i < 30; i++) {
-                await new Promise((r) => setTimeout(r, 500));
-                const engineResult = await pollEngineResult();
-                if (engineResult) {
-                  console.log("[useChat] engine result:", engineResult);
-                  break;
-                }
-              }
+              const engineResult = await waitForEngineResponse(
+                (payload) =>
+                  payload.type === "compile_and_run" &&
+                  payload.request_id === requestId,
+                15000
+              );
+              console.log("[useChat] engine result:", engineResult);
             } catch (e) {
               console.error("[useChat] engine error:", e);
             }

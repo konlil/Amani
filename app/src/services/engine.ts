@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { EngineStatus, CompileResult, ProjectInfo } from "../types";
 
 export async function startEngine(
@@ -23,8 +24,42 @@ export async function sendEngineCommand(command: Record<string, unknown>): Promi
   return invoke("send_engine_command", { command });
 }
 
-export async function pollEngineResult(): Promise<Record<string, unknown> | null> {
-  return invoke<Record<string, unknown> | null>("poll_engine_result");
+export async function waitForEngineResponse(
+  predicate: (payload: Record<string, unknown>) => boolean,
+  timeoutMs = 15000
+): Promise<Record<string, unknown>> {
+  return new Promise(async (resolve, reject) => {
+    let settled = false;
+    let timeoutId: number | undefined;
+    let cleanupUnlisten: (() => void) | undefined;
+
+    const cleanup = () => {
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId);
+      }
+      if (cleanupUnlisten) {
+        cleanupUnlisten();
+        cleanupUnlisten = undefined;
+      }
+    };
+
+    const unlistenPromise = listen<Record<string, unknown>>("engine-response", (event) => {
+      if (settled) return;
+      if (!predicate(event.payload)) return;
+      settled = true;
+      cleanup();
+      resolve(event.payload);
+    });
+
+    cleanupUnlisten = await unlistenPromise;
+
+    timeoutId = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error("Timed out waiting for engine response"));
+    }, timeoutMs);
+  });
 }
 
 export async function getEngineStatus(): Promise<EngineStatus> {

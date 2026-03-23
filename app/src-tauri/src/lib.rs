@@ -1,4 +1,5 @@
 mod engine;
+mod engine_ipc;
 mod llm;
 mod project;
 #[cfg(target_os = "macos")]
@@ -17,7 +18,6 @@ pub fn run() {
             engine::restart_engine,
             engine::engine_status,
             engine::send_engine_command,
-            engine::poll_engine_result,
             engine::embed_engine_window,
             engine::update_engine_bounds,
             engine::reposition_engine_overlay,

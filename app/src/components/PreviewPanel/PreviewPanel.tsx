@@ -6,7 +6,41 @@ import { useAppStore } from "../../stores/appStore";
 
 export default function PreviewPanel() {
   const containerRef = useRef<HTMLDivElement>(null);
+  const rafRef = useRef<number | null>(null);
+  const retryTimerRef = useRef<number | null>(null);
   const { engineRunning, setEngineRunning } = useAppStore();
+
+  const syncOverlayBounds = () => {
+    const el = containerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    invoke("update_engine_bounds", {
+      x: rect.left,
+      y: rect.top,
+      width: rect.width,
+      height: rect.height,
+      scaleFactor: window.devicePixelRatio,
+    }).catch((err: unknown) => {
+      console.error("[preview] update bounds failed:", err);
+    });
+  };
+
+  const showAndSyncOverlay = () => {
+    invoke("show_engine_window")
+      .catch((err: unknown) => {
+        console.error("[preview] show window failed:", err);
+      })
+      .finally(() => {
+        syncOverlayBounds();
+        if (retryTimerRef.current !== null) {
+          window.clearTimeout(retryTimerRef.current);
+        }
+        retryTimerRef.current = window.setTimeout(() => {
+          retryTimerRef.current = null;
+          syncOverlayBounds();
+        }, 250);
+      });
+  };
 
   // Listen for engine-stopped event
   useEffect(() => {
@@ -27,9 +61,13 @@ export default function PreviewPanel() {
 
     const doEmbed = () => {
       if (cancelled) return;
-      invoke("embed_engine_window").catch((err: unknown) => {
-        console.error("[preview] embed failed:", err);
-      });
+      invoke("embed_engine_window")
+        .then(() => {
+          showAndSyncOverlay();
+        })
+        .catch((err: unknown) => {
+          console.error("[preview] embed failed:", err);
+        });
     };
 
     doEmbed();
@@ -38,6 +76,10 @@ export default function PreviewPanel() {
     return () => {
       cancelled = true;
       unlistenHandle.then((f) => f());
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
     };
   }, [engineRunning]);
 
@@ -45,17 +87,18 @@ export default function PreviewPanel() {
   useEffect(() => {
     if (!containerRef.current || !engineRunning) return;
 
+    const syncNow = () => {
+      syncOverlayBounds();
+    };
+
     const sync = () => {
-      const el = containerRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      invoke("update_engine_bounds", {
-        x: rect.left,
-        y: rect.top,
-        width: rect.width,
-        height: rect.height,
-        scaleFactor: window.devicePixelRatio,
-      }).catch(() => {});
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+      }
+      rafRef.current = window.requestAnimationFrame(() => {
+        rafRef.current = null;
+        syncNow();
+      });
     };
 
     const observer = new ResizeObserver(sync);
@@ -66,6 +109,10 @@ export default function PreviewPanel() {
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", sync);
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
     };
   }, [engineRunning]);
 
@@ -75,34 +122,44 @@ export default function PreviewPanel() {
     const appWindow = getCurrentWindow();
 
     const syncBounds = () => {
-      const el = containerRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      invoke("update_engine_bounds", {
-        x: rect.left,
-        y: rect.top,
-        width: rect.width,
-        height: rect.height,
-        scaleFactor: window.devicePixelRatio,
-      }).catch(() => {});
+      syncOverlayBounds();
     };
 
     const unlistenMove = appWindow.onMoved(() => {
       invoke("reposition_engine_overlay").catch(() => {});
     });
 
+    const unlistenResize = appWindow.onResized(() => {
+      syncBounds();
+    });
+
     const unlistenFocus = appWindow.onFocusChanged(({ payload: focused }) => {
       if (focused) {
-        invoke("show_engine_window").catch(() => {});
-        syncBounds();
+        showAndSyncOverlay();
       } else {
         invoke("hide_engine_window").catch(() => {});
       }
     });
 
+    const handleVisibility = () => {
+      if (document.hidden) {
+        invoke("hide_engine_window").catch(() => {});
+      } else {
+        showAndSyncOverlay();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibility);
+
     return () => {
       unlistenMove.then((f) => f());
+      unlistenResize.then((f) => f());
       unlistenFocus.then((f) => f());
+      document.removeEventListener("visibilitychange", handleVisibility);
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
     };
   }, [engineRunning]);
 

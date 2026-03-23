@@ -1,27 +1,36 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{fs::OpenOptions, io::Write};
 use tauri::{Emitter, State, Window};
 use tokio::io::AsyncBufReadExt;
 use tokio::process::{Child, Command};
+use tokio::sync::mpsc::UnboundedSender;
 
 #[cfg(target_os = "macos")]
 use crate::window_embed;
+use crate::engine_ipc;
 
+#[derive(Clone)]
 pub struct EngineProcess {
-    pub child: Mutex<Option<Child>>,
-    pub project_path: Mutex<Option<PathBuf>>,
+    pub child: Arc<Mutex<Option<Child>>>,
+    pub project_path: Arc<Mutex<Option<PathBuf>>>,
     pub window_handle: Arc<Mutex<Option<u64>>>,
+    pub session_id: Arc<Mutex<Option<String>>>,
+    pub command_tx: Arc<Mutex<Option<UnboundedSender<String>>>>,
 }
 
 impl Default for EngineProcess {
     fn default() -> Self {
         Self {
-            child: Mutex::new(None),
-            project_path: Mutex::new(None),
+            child: Arc::new(Mutex::new(None)),
+            project_path: Arc::new(Mutex::new(None)),
             window_handle: Arc::new(Mutex::new(None)),
+            session_id: Arc::new(Mutex::new(None)),
+            command_tx: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -35,6 +44,80 @@ pub struct EngineStatus {
 fn bridge_project_path() -> PathBuf {
     let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     app_dir.join("engine-bridge")
+}
+
+fn log_engine(message: &str) {
+    let path = std::env::temp_dir().join("llm3d_overlay_engine.log");
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{message}");
+    }
+}
+
+fn new_session_id() -> String {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("engine-session-{ts}")
+}
+
+fn clear_runtime_state(state: &EngineProcess) {
+    if let Ok(mut lock) = state.window_handle.lock() {
+        *lock = None;
+    }
+    if let Ok(mut lock) = state.command_tx.lock() {
+        *lock = None;
+    }
+}
+
+fn build_command_message(command: Value, state: &EngineProcess) -> Result<Value, String> {
+    let session_id = state
+        .session_id
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .ok_or("No engine session is active")?;
+
+    let mut request = match command {
+        Value::Object(map) => map,
+        _ => return Err("Engine command must be a JSON object".into()),
+    };
+
+    request
+        .entry("request_id")
+        .or_insert_with(|| Value::String(new_session_id()));
+    request.insert("session_id".into(), Value::String(session_id));
+
+    Ok(Value::Object(request))
+}
+
+fn send_overlay_command(action: &str, payload: Value, state: &EngineProcess) -> Result<(), String> {
+    let mut obj = serde_json::Map::new();
+    obj.insert("action".into(), Value::String(action.to_string()));
+    if let Value::Object(map) = payload {
+        for (key, value) in map {
+            obj.insert(key, value);
+        }
+    }
+
+    let msg = build_command_message(Value::Object(obj), state)?;
+    engine_ipc::send_message(&state.command_tx, msg)
+}
+
+async fn wait_for_ipc_connection(state: &EngineProcess) -> Result<(), String> {
+    for _ in 0..50 {
+        let connected = state
+            .command_tx
+            .lock()
+            .map_err(|e| e.to_string())?
+            .is_some();
+        if connected {
+            return Ok(());
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    Err("Timed out waiting for engine IPC connection".into())
 }
 
 #[tauri::command]
@@ -56,15 +139,21 @@ pub async fn start_engine(
         *pp = Some(PathBuf::from(&game_project_path));
     }
 
-    let bridge_path = bridge_project_path();
+    clear_runtime_state(&state);
 
-    // Clear previous window handle
+    let session_id = new_session_id();
     {
-        let mut wh = state.window_handle.lock().map_err(|e| e.to_string())?;
-        *wh = None;
+        let mut session_lock = state.session_id.lock().map_err(|e| e.to_string())?;
+        *session_lock = Some(session_id.clone());
     }
 
-    // Launch engine in watch mode, positioned offscreen to avoid flicker
+    let ipc_port = engine_ipc::start_ipc_server(window.clone(), state.inner().clone()).await?;
+    let bridge_path = bridge_project_path();
+    log_engine(&format!(
+        "start_engine project={} session={} ipc_port={}",
+        game_project_path, session_id, ipc_port
+    ));
+
     let mut child = Command::new(&engine_path)
         .arg("--path")
         .arg(bridge_path.to_string_lossy().as_ref())
@@ -74,44 +163,36 @@ pub async fn start_engine(
         .arg("--project-dir")
         .arg(&game_project_path)
         .arg("--watch")
+        .arg("--ipc-host")
+        .arg("127.0.0.1")
+        .arg("--ipc-port")
+        .arg(ipc_port.to_string())
+        .arg("--session-id")
+        .arg(&session_id)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to start engine: {}", e))?;
+        .map_err(|e| format!("Failed to start engine: {e}"))?;
 
-    // Read stdout for JSON responses
     let stdout = child.stdout.take();
     if let Some(stdout) = stdout {
         let win = window.clone();
-        let wh = Arc::clone(&state.window_handle);
+        let state_clone = state.inner().clone();
         tokio::spawn(async move {
             let reader = tokio::io::BufReader::new(stdout);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                if let Ok(json) = serde_json::from_str::<Value>(&line) {
-                    // Capture window handle reported by bridge.gd
-                    // GDScript prints the NSWindow pointer as a signed int,
-                    // so parse as i64 first then cast to u64.
-                    if json.get("type").and_then(|t| t.as_str()) == Some("window_handle") {
-                        let handle = json.get("handle")
-                            .and_then(|h| h.as_u64().or_else(|| h.as_i64().map(|v| v as u64)));
-                        if let Some(handle) = handle {
-                            if let Ok(mut lock) = wh.lock() {
-                                *lock = Some(handle);
-                            }
-                            let _ = win.emit("engine-window-handle", handle);
-                        }
-                    }
-                    let _ = win.emit("engine-response", json);
-                } else {
-                    let _ = win.emit("engine-log", line);
-                }
+                let _ = win.emit("engine-log", line);
             }
+
+            if let Ok(mut child_lock) = state_clone.child.lock() {
+                *child_lock = None;
+            }
+            clear_runtime_state(&state_clone);
             let _ = win.emit("engine-stopped", ());
         });
     }
 
-    // Read stderr to prevent pipe buffer from filling up and blocking the engine
     let stderr = child.stderr.take();
     if let Some(stderr) = stderr {
         let win = window.clone();
@@ -137,29 +218,10 @@ pub async fn stop_engine(
     _window: Window,
     state: State<'_, EngineProcess>,
 ) -> Result<String, String> {
-    // Detach file-based overlay
     #[cfg(target_os = "macos")]
     {
         let _ = window_embed::detach_engine();
     }
-
-    // Clear window handle
-    {
-        let mut wh = state.window_handle.lock().map_err(|e| e.to_string())?;
-        *wh = None;
-    }
-
-    // Write quit command file
-    let project_path = {
-        let pp = state.project_path.lock().map_err(|e| e.to_string())?;
-        pp.clone()
-    };
-    if let Some(ref pp) = project_path {
-        let cmd_file = pp.join("command.json");
-        let _ = tokio::fs::write(&cmd_file, r#"{"action":"quit"}"#).await;
-    }
-
-    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
     let child = {
         let mut child_lock = state.child.lock().map_err(|e| e.to_string())?;
@@ -167,7 +229,10 @@ pub async fn stop_engine(
     };
 
     if let Some(mut child) = child {
+        let _ = send_overlay_command("quit", json!({}), &state);
+        let _ = tokio::time::timeout(tokio::time::Duration::from_millis(500), child.wait()).await;
         let _ = child.kill().await;
+        clear_runtime_state(&state);
         Ok("Engine stopped".into())
     } else {
         Err("Engine not running".into())
@@ -185,56 +250,25 @@ pub async fn restart_engine(
         let mut child_lock = state.child.lock().map_err(|e| e.to_string())?;
         child_lock.take()
     };
+
     if let Some(mut child) = old_child {
         let _ = child.kill().await;
     }
+
+    clear_runtime_state(&state);
     start_engine(window, engine_path, game_project_path, state).await
 }
 
-/// Send a command to the engine via file-based protocol
 #[tauri::command]
 pub async fn send_engine_command(
     command: Value,
     state: State<'_, EngineProcess>,
 ) -> Result<(), String> {
-    let project_path = {
-        let pp = state.project_path.lock().map_err(|e| e.to_string())?;
-        pp.clone().ok_or("No project path set")?
-    };
+    wait_for_ipc_connection(&state).await?;
 
-    // Clear previous result
-    let result_file = project_path.join("result.json");
-    let _ = tokio::fs::remove_file(&result_file).await;
-
-    // Write command file
-    let cmd_file = project_path.join("command.json");
-    let json_str = serde_json::to_string(&command).map_err(|e| e.to_string())?;
-    tokio::fs::write(&cmd_file, &json_str)
-        .await
-        .map_err(|e| format!("Failed to write command: {}", e))?;
-
-    Ok(())
-}
-
-/// Poll for engine result file
-#[tauri::command]
-pub async fn poll_engine_result(
-    state: State<'_, EngineProcess>,
-) -> Result<Option<Value>, String> {
-    let project_path = {
-        let pp = state.project_path.lock().map_err(|e| e.to_string())?;
-        pp.clone().ok_or("No project path set")?
-    };
-
-    let result_file = project_path.join("result.json");
-    match tokio::fs::read_to_string(&result_file).await {
-        Ok(content) => {
-            let _ = tokio::fs::remove_file(&result_file).await;
-            let json: Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-            Ok(Some(json))
-        }
-        Err(_) => Ok(None),
-    }
+    let request = build_command_message(command, &state)?;
+    log_engine(&format!("send_engine_command payload={request}"));
+    engine_ipc::send_message(&state.command_tx, request)
 }
 
 #[tauri::command]
@@ -247,52 +281,26 @@ pub async fn engine_status(state: State<'_, EngineProcess>) -> Result<EngineStat
     })
 }
 
-/// Set up file-based window positioning bridge.
-/// Waits for Godot to report its window handle (confirming it's alive),
-/// then initializes the overlay state with the project path.
 #[tauri::command]
 pub async fn embed_engine_window(
     window: Window,
     state: State<'_, EngineProcess>,
 ) -> Result<(), String> {
-    let wh_arc = Arc::clone(&state.window_handle);
-    let project_path = {
-        let pp = state.project_path.lock().map_err(|e| e.to_string())?;
-        pp.clone()
-    };
-
-    // Wait for Godot to be ready (it writes window_handle file on startup)
     for _ in 0..50 {
-        if let Ok(lock) = wh_arc.lock() {
+        if let Ok(lock) = state.window_handle.lock() {
             if lock.is_some() {
                 break;
-            }
-        }
-        if let Some(ref pp) = project_path {
-            let handle_file = pp.join("window_handle");
-            if let Ok(content) = tokio::fs::read_to_string(&handle_file).await {
-                if let Ok(h) = content.trim().parse::<i64>() {
-                    let h = h as u64;
-                    if let Ok(mut lock) = wh_arc.lock() {
-                        *lock = Some(h);
-                    }
-                    let _ = tokio::fs::remove_file(&handle_file).await;
-                    break;
-                }
             }
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
-    // Confirm Godot is alive
     {
-        let lock = wh_arc.lock().map_err(|e| e.to_string())?;
+        let lock = state.window_handle.lock().map_err(|e| e.to_string())?;
         if lock.is_none() {
             return Err("Timed out waiting for Godot window handle".into());
         }
     }
-
-    let pp = project_path.ok_or("No project path set")?;
 
     #[cfg(target_os = "macos")]
     {
@@ -300,7 +308,7 @@ pub async fn embed_engine_window(
         let (tx, rx) = tokio::sync::oneshot::channel();
         window
             .run_on_main_thread(move || {
-                let result = window_embed::embed_engine(ns_ptr, pp);
+                let result = window_embed::embed_engine(ns_ptr);
                 let _ = tx.send(result);
             })
             .map_err(|e| e.to_string())?;
@@ -310,14 +318,13 @@ pub async fn embed_engine_window(
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (window, pp);
+        let _ = window;
         return Err("Window embedding is only supported on macOS".into());
     }
 
     Ok(())
 }
 
-/// Update the embedded engine window position/size to match the preview panel.
 #[tauri::command]
 pub async fn update_engine_bounds(
     window: Window,
@@ -326,6 +333,7 @@ pub async fn update_engine_bounds(
     width: f64,
     height: f64,
     scale_factor: f64,
+    state: State<'_, EngineProcess>,
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -338,23 +346,42 @@ pub async fn update_engine_bounds(
                 let _ = tx.send(result);
             })
             .map_err(|e| e.to_string())?;
-        rx.await
-            .map_err(|_| "main thread channel closed".to_string())??;
+
+        if let Some(frame) = rx
+            .await
+            .map_err(|_| "main thread channel closed".to_string())??
+        {
+            log_engine(&format!(
+                "update_engine_bounds frame x={} y={} w={} h={}",
+                frame.x, frame.y, frame.width, frame.height
+            ));
+            send_overlay_command(
+                "set_frame",
+                json!({
+                    "x": frame.x,
+                    "y": frame.y,
+                    "width": frame.width,
+                    "height": frame.height,
+                }),
+                &state,
+            )?;
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (window, x, y, width, height, scale_factor);
+        let _ = (window, x, y, width, height, scale_factor, state);
         return Err("Window embedding is only supported on macOS".into());
     }
 
     Ok(())
 }
 
-/// Reposition the engine overlay using the last saved bounds.
-/// Called when the Tauri window is dragged/moved.
 #[tauri::command]
-pub async fn reposition_engine_overlay(window: Window) -> Result<(), String> {
+pub async fn reposition_engine_overlay(
+    window: Window,
+    state: State<'_, EngineProcess>,
+) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -364,48 +391,84 @@ pub async fn reposition_engine_overlay(window: Window) -> Result<(), String> {
                 let _ = tx.send(result);
             })
             .map_err(|e| e.to_string())?;
-        rx.await
-            .map_err(|_| "main thread channel closed".to_string())??;
+
+        if let Some(frame) = rx
+            .await
+            .map_err(|_| "main thread channel closed".to_string())??
+        {
+            log_engine(&format!(
+                "reposition_engine_overlay frame x={} y={} w={} h={}",
+                frame.x, frame.y, frame.width, frame.height
+            ));
+            send_overlay_command(
+                "set_frame",
+                json!({
+                    "x": frame.x,
+                    "y": frame.y,
+                    "width": frame.width,
+                    "height": frame.height,
+                }),
+                &state,
+            )?;
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = window;
+        let _ = (window, state);
     }
 
     Ok(())
 }
 
-/// Show the engine overlay window (e.g. when the app regains focus).
 #[tauri::command]
-pub async fn show_engine_window(window: Window) -> Result<(), String> {
+pub async fn show_engine_window(window: Window, state: State<'_, EngineProcess>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
         window
             .run_on_main_thread(move || {
-                let result = window_embed::show_engine();
+                let result = window_embed::reposition_to_last();
                 let _ = tx.send(result);
             })
             .map_err(|e| e.to_string())?;
-        rx.await
-            .map_err(|_| "main thread channel closed".to_string())??;
+
+        if let Some(frame) = rx
+            .await
+            .map_err(|_| "main thread channel closed".to_string())??
+        {
+            log_engine(&format!(
+                "show_engine_window frame x={} y={} w={} h={}",
+                frame.x, frame.y, frame.width, frame.height
+            ));
+            send_overlay_command(
+                "set_frame",
+                json!({
+                    "x": frame.x,
+                    "y": frame.y,
+                    "width": frame.width,
+                    "height": frame.height,
+                }),
+                &state,
+            )?;
+        }
+
+        send_overlay_command("show_window", json!({}), &state)?;
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = window;
+        let _ = (window, state);
     }
 
     Ok(())
 }
 
-/// Hide the engine overlay window (e.g. when the app loses focus).
 #[tauri::command]
-pub async fn hide_engine_window(_window: Window) -> Result<(), String> {
+pub async fn hide_engine_window(_window: Window, state: State<'_, EngineProcess>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let _ = window_embed::hide_engine();
+        send_overlay_command("hide_window", json!({}), &state)?;
     }
 
     Ok(())
